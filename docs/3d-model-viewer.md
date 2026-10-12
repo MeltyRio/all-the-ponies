@@ -14,7 +14,7 @@ From the repository root, with Python 3.12+, Node and pnpm:
 ```sh
 python3 -m venv tools/model-converter/.venv
 tools/model-converter/.venv/bin/python -m pip install './tools/model-converter[native]'
-tools/model-converter/.venv/bin/python -m unittest discover -s tools/model-converter/tests -v
+tools/model-converter/.venv/bin/python -m unittest discover -s tools/model-converter/tests -t tools/model-converter -v
 pnpm install --frozen-lockfile
 tools/model-converter/.venv/bin/python tools/model-converter/examples/make_demo.py \
   --output tests/model-viewer/generated
@@ -31,9 +31,12 @@ policy, approve the existing upstream build scripts for `@parcel/watcher`,
 install. Keep that machine's approval configuration local; no blanket dependency
 script approval is needed for the viewer.
 
-The output directory must be new. Preserve earlier results or choose another
-folder with `MODEL_VIEWER_ASSETS` when repeating conversion. The browser demo
-opens at `http://127.0.0.1:5195`; it uses the real ATP viewer/dialog components in
+The output directory must be new. When repeating conversion, preserve earlier
+results and pass a fresh directory to `make_demo.py --output`. Use the same path
+in `MODEL_VIEWER_ASSETS` for the browser commands and as the argument to
+`pnpm test:model-viewer:glb <output-directory>`.
+
+The browser demo opens at `http://127.0.0.1:5195`; it uses the real ATP viewer/dialog components in
 a small test page, not the entire ATP site. A test-only asset resolver points
 to a second local HTTP origin, exercising CORS and the catalogue/upload contract.
 The normal application always uses ATP's existing `createAssetUrl`.
