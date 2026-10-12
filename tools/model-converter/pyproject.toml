@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "atp-model-converter"
+version = "0.1.0.dev0"
+description = "RK models and separate animation GLBs for All The Ponies"
+readme = "README.md"
+requires-python = ">=3.12"
+license = "GPL-3.0-only"
+license-files = ["LICENSE"]
+dependencies = ["numpy>=2,<3", "Pillow>=11,<13"]
+
+[project.optional-dependencies]
+native = ["luna-kit[rk] @ https://codeload.github.com/ego-lay-atman-bay/luna-kit/tar.gz/aeb659af80f973a7bb7d2d058f05b4fc1446bed3#sha256=c08f398d762a9599596fb17d3152a5bf72a96adf5c96be9e91fe58eacc32778f"]
+
+[project.scripts]
+atp-convert-model = "atp_glb.export:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

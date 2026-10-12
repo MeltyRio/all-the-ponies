@@ -33,3 +33,6 @@ To build, run this
 ```sh
 npm run build
 ```
+
+The optional 3D model viewer and asset-free converter demo are documented in
+[3D model viewer](docs/3d-model-viewer.md).
