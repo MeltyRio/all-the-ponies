@@ -34,5 +34,5 @@ To build, run this
 npm run build
 ```
 
-The optional 3D model viewer and asset-free converter demo are documented in
+The optional 3D model viewer and local game-resource demo are documented in
 [3D model viewer](docs/3d-model-viewer.md).

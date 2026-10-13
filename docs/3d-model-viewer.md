@@ -7,67 +7,101 @@ No catalogue entry means no 3D button. Existing inventory/variant controls are
 unchanged. Each page looks up its object ID in the same catalogue; a costume
 entry represents a verified, complete outfit model, not an interactive wardrobe.
 
-## Reproduce without game assets
+## Run the demo with game models
 
-The matching local `game-data` candidate owns source discovery and GLB generation.
-ATP contains only the consumer and its tests. No separate converter installation
-or Python dependency pin is needed in this repository.
+Use this ATP PR together with [game-data PR #1](https://github.com/all-the-ponies/game-data/pull/1)
+(`MeltyRio/game-data`, branch `codex/3d-resource-association`). Conversion and
+native discovery belong to game-data; ATP does not have a Python converter.
 
-Use the matching `all-the-ponies/game-data` branch that contains
-`tests/make_model_demo.py`; unmodified upstream does not yet include this feature.
-Follow that checkout's README setup for Python >=3.14 and its native dependencies,
-then prepare its locked environment and run:
+First obtain a completed local output from that game-data branch. It must contain
+`models_3d.json` and every referenced file under `models/3d/`. Existing upstream
+outputs without the new catalogue cannot provide 3D models. Game resources are
+not included in either PR; the demo reads resources you have generated locally.
 
-```sh
-uv sync --locked
-uv run --no-sync python -m unittest discover -s tests -v
-uv run --no-sync python tests/make_model_demo.py --output /tmp/atp-model-demo
-```
-
-Use a **new** output directory. The demonstration writes self-authored native
-inputs and a private report under `raw/`, and the public fixture under `assets/`.
-It invokes the same `generate_models` stage used by the normal game-data build;
-it does not require game resources, download assets, or contact a bucket.
-
-Then, from this ATP repository, use pnpm 10.28.2 and its frozen lockfile:
+From the ATP checkout, use pnpm 10.28.2 and the frozen lockfile:
 
 ```sh
 pnpm install --frozen-lockfile
-export MODEL_VIEWER_ASSETS=/tmp/atp-model-demo/assets
-pnpm test:model-viewer
-pnpm test:model-viewer:glb "$MODEL_VIEWER_ASSETS"
-```
-
-For the browser checks, use an existing Chromium via `CHROME_PATH`, or install
-Playwright's browser with `pnpm exec playwright install chromium`, then run:
-
-```sh
-pnpm test:model-viewer:browser
+export MODEL_VIEWER_ASSETS="/absolute/path/to/game-data/dist"
 pnpm demo:model-viewer
 ```
 
-The browser test uses Playwright's installed Chromium, or an existing Chromium
-selected by `CHROME_PATH`. The lockfile was generated with pnpm 10.28.2; use the
-repository's normal dependency-installation workflow. Do not run an upload tool
-against the fixture directory.
+Open `http://127.0.0.1:5195` in a browser. No domain, bucket or deployment is needed.
+The page lists the actual catalogue identities. Search for an Object ID, select
+it and use the 3D button to open ATP's real viewer. Pony, Pet and pre-generated
+Costume entries use their own IDs; costumes may use native names such as `SET_*`.
+Only generated entries appear. An explicitly requested missing identity shows a
+message and never substitutes another model. For a direct link, for example:
 
-The browser demo opens at `http://127.0.0.1:5195`; it uses the real ATP viewer/dialog components in
-a small test page, not the entire ATP site. A test-only asset resolver points
-to a second local HTTP origin, exercising CORS and the catalogue/upload contract.
-The normal application always uses ATP's existing `createAssetUrl`.
+```text
+http://127.0.0.1:5195/?identity=Pony_Twilight_Sparkle
+```
 
-The game-data example creates self-authored native object tables, two-joint RK
-and ANIM data, resolves their explicit references, and produces a textured skinned flag and a three-second
-`wave` animation. No native game files, GLBs, screenshots, credentials or local
-wheel are committed. The browser test saves screenshots/video/results below
-ignored `tests/model-viewer/generated/browser`. `CHROME_PATH` may explicitly
-select an existing Chromium browser; the test otherwise uses Playwright's
-installed Chromium. `MODEL_VIEWER_RESULTS` and `MODEL_VIEWER_PORT` override local
-test output and port.
+The selected entry must exist in that catalogue. Animation buttons play its
+supported clips once, then restore rest. The lock switches horizontal/free
+rotation, and Reset restores the view and pose. Supported additional actors and
+native materials load with the selected resource; they do not need separate demo
+switches. The demo does not add unsupported game events or interactive clothing.
 
-For the actual site, use ATP's existing development/build instructions and
-configured data environment. Run `pnpm build` and `pnpm type-check` separately;
-the standalone demo does not replace the full production build.
+Keep the terminal running; Ctrl+C stops the local servers. `MODEL_VIEWER_PORT`
+overrides the page port. Missing `MODEL_VIEWER_ASSETS` or an unreadable catalogue
+stops startup with instructions. There is no built-in model or generated fallback.
+Restart the demo after regenerating the catalogue.
+
+The page uses the actual ATP viewer/dialog components, without booting the whole
+ATP site. A test-only asset resolver serves the selected output from a second
+local HTTP origin to exercise CORS and manifest serialization. Production keeps
+ATP's existing `createAssetUrl`; this demo does not upload or contact its CDN.
+
+### Generate a local output when needed
+
+Use game-data's [setup and build instructions](https://github.com/MeltyRio/game-data/blob/codex/3d-resource-association/README.md).
+The normal build runs Transformer and then model generation. For a local review,
+use complete, successfully extracted inputs for one fixed game version and an
+isolated raw/output directory. For example, from the game-data checkout:
+
+```sh
+uv run --no-sync game-data --env dev build \
+  --version 11.4.3c \
+  --raw /absolute/path/to/isolated-raw \
+  --output /absolute/path/to/new-review-dist \
+  --skip download extract image_gen
+```
+
+Replace the version with the actual input version. The raw directory must contain
+`extracted/` with all inputs needed by Transformer and model generation, not just
+one RK/ANIM pair. The build writes its private model report under raw and clears
+the specified output before Transformer, so use a new output path. Skipping
+`image_gen` only skips the later image stage: Transformer can still need its
+normal image/SWF tools. Do not add `--skip transform` for an empty output.
+This command does not request uploads. Point `MODEL_VIEWER_ASSETS` at the resulting
+`new-review-dist`, without copying game files into the ATP checkout.
+
+## Tests
+
+The Node unit tests use small self-authored in-memory data and need no game assets:
+
+```sh
+pnpm test:model-viewer
+```
+
+With the same real output selected above, validate its GLBs and run browser checks:
+
+```sh
+pnpm test:model-viewer:glb "$MODEL_VIEWER_ASSETS"
+pnpm test:model-viewer:browser
+```
+
+Browser tests require an installed Playwright Chromium, or `CHROME_PATH` pointing
+to an existing Chromium. The tests record their selected identities and any
+optional cases absent from the supplied catalogue; absent coverage is not a pass.
+Screenshots/video/results go to ignored `tests/model-viewer/generated/browser`,
+or `MODEL_VIEWER_RESULTS`. They are private local output, not committed fixtures.
+Do not run upload tools against a partial test output.
+
+For the full site, use ATP's normal development/build instructions and configured
+data environment. Run its build and type checking separately; the demo is not a
+replacement for those checks or production delivery acceptance.
 
 ## Data and hosting contract
 
@@ -214,9 +248,10 @@ the verified UV clock. Unknown shader/controller combinations still fail; this
 is not general native shader execution. Future formats require investigation and
 tests. Standard glTF validation cannot prove native-game visual equivalence.
 
-The public tests verify synthetic geometry, indices, UVs, skin/bind math, alpha,
-frame decoding, invalid input, separation/binding, resource integrity, disposal,
-async cancellation and actual Chromium rendering/input. Mobile tests emulate
+Producer and consumer unit tests use small synthetic inputs for geometry, indices,
+UVs, skin/bind math, alpha, frame decoding, invalid input, separation/binding and
+resource integrity. Browser checks use the selected local game-data output for
+actual Chromium rendering/input, playback, disposal and cancellation. Mobile tests emulate
 Chromium touch, not physical iOS/Safari. English strings use ATP's usual fallback;
 additional translations are deferred.
 
