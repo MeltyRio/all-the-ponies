@@ -40,9 +40,5 @@ requirements.local.txt
 resources/designs/
 pnpm-workspace.yaml
 
-# Local converter environments and generated synthetic/native outputs
-tools/model-converter/.venv/
-tools/model-converter/src/*.egg-info/
-tools/model-converter/build/
-tools/model-converter/demo-assets/
+# Generated viewer test assets
 tests/model-viewer/generated/

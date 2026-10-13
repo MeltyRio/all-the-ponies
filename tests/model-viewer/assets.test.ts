@@ -16,6 +16,7 @@ test('CDN assets use ATP resolver and verify binary size and digest', async () =
         assert.equal(String(input), `https://assets.all-the-ponies.com/${ref.path}`)
         assert.equal(options.credentials, 'omit')
         assert.equal(options.redirect, 'error')
+        assert.equal(options.cache, 'default')
         return new Response(bytes)
     }
     assert.deepEqual(Buffer.from(await verifiedBytes(ref, signal())), bytes)
@@ -110,4 +111,96 @@ test('shared GPU objects and image bitmaps are each released once across scenes'
     }
     disposeGLTF({ scenes: [0, 1].map(() => ({ traverse(fn) { fn(object) } })) } as any)
     assert.deepEqual(counts, { geometry: 1, skeleton: 1, material: 1, texture: 1, bitmap: 1 })
+})
+
+
+test('fixed Object ID models revalidate while native named animations remain shared and cached', async () => {
+    const animation = { ...model.animations[0], path: `models/3d/${ref.sha256}/move.glb` }
+    const named = (id: string) => ({ ...ref, path: `models/3d/${id}.glb`, animations: [animation] })
+    const catalogue = { schemaVersion: 1, models: { Pony_Test: named('Pony_Test'), Pet_Test: named('Pet_Test') } }
+    const fetched: string[] = []
+    globalThis.fetch = async (input, options) => {
+        const path = new URL(String(input)).pathname.slice(1); fetched.push(path)
+        if (path === 'manifest.json') return Response.json({ 'models_3d.json': 'b'.repeat(64) })
+        if (path === 'models_3d.json') return Response.json(catalogue)
+        assert.ok([catalogue.models.Pony_Test.path, catalogue.models.Pet_Test.path, animation.path].includes(path))
+        assert.equal(options.cache, path === animation.path ? 'default' : 'no-cache')
+        return new Response(bytes)
+    }
+    const pony = await resolveModel('Pony_Test', signal())
+    const pet = await resolveModel('Pet_Test', signal())
+    assert.deepEqual(pony, catalogue.models.Pony_Test)
+    assert.deepEqual(pet, catalogue.models.Pet_Test)
+    assert.equal(pony!.animations[0].path, pet!.animations[0].path)
+    for (const resource of [pony!, pet!, animation]) {
+        assert.deepEqual(Buffer.from(await verifiedBytes(resource, signal())), bytes)
+    }
+    assert.equal(fetched.filter(path => path.endsWith('.glb')).length, 3)
+})
+
+test('named catalogue filenames must match the object or animation identity', async () => {
+    for (const resource of [
+        { ...model, path: 'models/3d/Pony_Other.glb' },
+        { ...model, path: `models/3d/${ref.sha256}/Pony_Other.glb` },
+        { ...model, animations: [{ ...model.animations[0], path: `models/3d/${ref.sha256}/other.glb` }] },
+        { ...model, animations: [{ ...model.animations[0], path: 'models/3d/move.glb' }] },
+    ]) {
+        globalThis.fetch = async input => {
+            const path = new URL(String(input)).pathname
+            assert.ok(path === '/manifest.json' || path === '/models_3d.json')
+            return Response.json(path === '/manifest.json'
+                ? { 'models_3d.json': 'b'.repeat(64) }
+                : { schemaVersion: 1, models: { Pony_Test: resource } })
+        }
+        await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    }
+})
+
+test('nested paths reject wrong digest, separators, escapes and empty filenames before fetch', async () => {
+    globalThis.fetch = async () => { throw new Error('Unexpected fetch') }
+    for (const path of [
+        `models/3d/${'c'.repeat(64)}/Pony_Test.glb`,
+        ...['', '..', 'a/b', 'a\\b', '%2e%2e', 'Pony_Test?x', 'Pony_Test#x', 'Pony_Test.glb', 'Pony_Test\n']
+            .map(name => `models/3d/${ref.sha256}/${name}.glb`),
+        `models/3d/${ref.sha256}/Pony_Test.glb\n`,
+        ...['', '..', 'a/b', 'a\\b', '%2e%2e', 'Pony_Test?x', 'Pony_Test#x', 'Pony_Test.glb']
+            .map(name => `models/3d/${name}.glb`),
+        'models/3d/Pony_Test.glb\n',
+    ]) await assert.rejects(verifiedBytes({ ...ref, path }, signal()), /resource path/)
+})
+
+test('overwritten fixed models reject stale references and load after resolving the new catalogue', async () => {
+    const fixed = { ...model, path: 'models/3d/Pony_Test.glb' }
+    const newer = Buffer.alloc(bytes.length, 1)
+    const updated = { ...fixed, sha256: hash(newer) }
+    let current = fixed
+    globalThis.fetch = async (input, options) => {
+        const path = new URL(String(input)).pathname
+        if (path === '/manifest.json') return Response.json({ 'models_3d.json': 'b'.repeat(64) })
+        if (path === '/models_3d.json') return Response.json({ schemaVersion: 1, models: { Pony_Test: current } })
+        assert.equal(path, '/models/3d/Pony_Test.glb')
+        assert.equal(options.cache, 'no-cache')
+        return new Response(newer)
+    }
+    const previous = await resolveModel('Pony_Test', signal())
+    await assert.rejects(verifiedBytes(previous!, signal()), /digest mismatch/)
+    current = updated
+    const latest = await resolveModel('Pony_Test', signal())
+    assert.equal(latest!.path, previous!.path)
+    assert.deepEqual(Buffer.from(await verifiedBytes(latest!, signal())), newer)
+})
+
+test('old flat keys and two named revisions remain independently verifiable', async () => {
+    const newer = Buffer.from('changed binary fixture')
+    const previous = { ...ref, path: `models/3d/${ref.sha256}/Pony_Test.glb` }
+    const next = { ...previous, sha256: hash(newer), path: `models/3d/${hash(newer)}/Pony_Test.glb`, bytes: newer.length }
+    const storage = new Map([[ref.path, bytes], [previous.path, bytes], [next.path, newer]])
+    globalThis.fetch = async input => {
+        const found = storage.get(new URL(String(input)).pathname.slice(1))
+        assert.ok(found)
+        return new Response(found)
+    }
+    assert.deepEqual(Buffer.from(await verifiedBytes(next, signal())), newer)
+    assert.deepEqual(Buffer.from(await verifiedBytes(previous, signal())), bytes)
+    assert.deepEqual(Buffer.from(await verifiedBytes(ref, signal())), bytes)
 })

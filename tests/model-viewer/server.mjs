@@ -14,7 +14,7 @@ const digest = bytes => createHash('sha256').update(bytes).digest('hex')
 export async function startDemo(port = 5195) {
     const raw = await fs.readFile(path.join(generated, 'models_3d.json'))
     // As with ATP's uploader, JSON may be serialized again. Catalogue identity
-    // comes from the final manifest; only immutable binary resources use SHA.
+    // comes from the final manifest; binary resources retain their own SHA.
     const catalogue = Buffer.from(JSON.stringify(JSON.parse(raw)))
     const manifest = Buffer.from(JSON.stringify({ 'models_3d.json': digest(catalogue) }))
     const requests = []
@@ -27,7 +27,7 @@ export async function startDemo(port = 5195) {
             if (key === 'manifest.json' || key === 'models_3d.json') {
                 response.setHeader('Content-Type', 'application/json')
                 response.end(key === 'manifest.json' ? manifest : catalogue)
-            } else if (/^models\/3d\/[a-f0-9]{64}\.glb$/.test(key)) {
+            } else if (/^models\/3d\/(?:[A-Za-z0-9_-]+|[a-f0-9]{64}\/[A-Za-z0-9_-]+)\.glb$/.test(key)) {
                 response.setHeader('Content-Type', 'model/gltf-binary')
                 response.end(await fs.readFile(path.join(generated, key)))
             } else {

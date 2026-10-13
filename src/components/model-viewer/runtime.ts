@@ -3,6 +3,8 @@ import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bindAnimation, jointObjects, rigMetadata } from './animation';
 import { disposeGLTF, loadGLB, type AnimationRef, type ModelRef } from './assets';
+import { loadAdditionalActor, type AdditionalActor } from './additional';
+import { applyNativeDepth, nativeUVClock } from './native-materials';
 
 export type ViewerState = {
     ready: boolean,
@@ -36,21 +38,6 @@ function visibleBounds(root: THREE.Object3D) {
     return box
 }
 
-function applyNativeDepth(model: GLTF) {
-    model.scene.traverse(object => {
-        if (!(object instanceof THREE.Mesh)) return
-        for (const material of [object.material].flat()) {
-            const depth = material.userData.atpNativeDepth
-            if (depth === undefined) continue
-            if (!depth || typeof depth.write !== 'boolean' || typeof depth.test !== 'boolean') {
-                throw new Error('Invalid native depth state')
-            }
-            material.depthWrite = depth.write
-            material.depthTest = depth.test
-        }
-    })
-}
-
 /** Created only after Vue mounts; this module performs no work during SSR. */
 export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: ViewerState) => void) {
     const state: ViewerState = {ready: false, loading: true, playing: false, free: false, activeAnimation: '', error: ''}
@@ -68,6 +55,8 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     controls.touches.TWO = undefined
     let disposed = false
     let model: GLTF | undefined
+    let additional: AdditionalActor | undefined
+    let materialClock: ReturnType<typeof nativeUVClock> | undefined
     let mixer: THREE.AnimationMixer | undefined
     let rest: {object: THREE.Object3D, position: THREE.Vector3, quaternion: THREE.Quaternion, scale: THREE.Vector3}[] = []
     let initial: {position: THREE.Vector3, target: THREE.Vector3, polar: number} | undefined
@@ -93,6 +82,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             item.object.scale.copy(item.scale)
         }
         model?.scene.updateMatrixWorld(true)
+        additional?.place()
     }
     function stop() {
         generation++
@@ -105,24 +95,29 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         state.loading = !state.ready
         state.activeAnimation = ''
         finished = false
+        resume()
     }
     function frame(time: number) {
         frameId = 0
-        if (disposed || document.hidden || !state.playing) return
+        if (disposed || document.hidden || (!state.playing && !additional?.running() && !materialClock?.active)) return
         const delta = lastTime === undefined ? 0 : Math.min((time - lastTime) / 1000, .1)
         lastTime = time
-        mixer!.update(delta)
+        if (state.playing) mixer!.update(delta)
         // Restore after mixer.update has applied its bindings, not from inside
         // the mixer's finished event, where it is still updating this frame.
         if (finished) {
             stop()
             notify()
         }
+        additional?.update(delta)
+        materialClock?.update(delta)
         render()
         resume()
     }
     function resume() {
-        if (!disposed && !document.hidden && state.playing && !frameId) frameId = requestAnimationFrame(frame)
+        if (!disposed && state.ready && !document.hidden && (state.playing || additional?.running() || materialClock?.active) && !frameId) {
+            frameId = requestAnimationFrame(frame)
+        }
     }
     function visibility() {
         if (document.hidden) cancelFrame()
@@ -150,6 +145,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     function reset() {
         stop()
         state.error = ''
+        additional?.restart()
         resetCamera()
         notify()
     }
@@ -210,6 +206,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             state.activeAnimation = animation.id
             mixer!.clipAction(clip).reset().setLoop(THREE.LoopOnce, 1).play()
             mixer!.update(0)
+            additional?.place()
             notify()
             render()
             resume()
@@ -227,13 +224,15 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         disposed = true
         stop()
         modelAbort.abort()
+        additional?.dispose()
         observer.disconnect()
         controls.removeEventListener('change', render)
         controls.dispose()
         canvas.removeEventListener('keydown', keydown)
         document.removeEventListener('visibilitychange', visibility)
         mixer?.removeEventListener('finished', onFinished)
-        if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model) }
+        if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
+        materialClock = undefined
         clips.clear()
         rest = []
         renderer.dispose()
@@ -243,6 +242,8 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     function snapshot() {
         return {
             ...state, disposed, cachedAnimations: clips.size,
+            ...(additional ? { additional: additional.snapshot() } : {}),
+            ...(materialClock?.active ? { nativeMaterial: materialClock.snapshot() } : {}),
             polar: controls.getPolarAngle(), azimuth: controls.getAzimuthalAngle(), distance: controls.getDistance(),
             position: camera.position.toArray(), target: controls.target.toArray(),
             atRest: rest.every(item => item.object.position.distanceTo(item.position) < 1e-7
@@ -260,13 +261,28 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             if (rigMetadata(model).key !== ref.rigKey) throw new Error('Model rig identity mismatch')
             if (model.animations.length) throw new Error('Static model unexpectedly contains animations')
             applyNativeDepth(model)
+            materialClock = nativeUVClock(model)
             scene.add(model.scene)
             rest = [...jointObjects(model).values()].map(object => ({
                 object, position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
             }))
             mixer = new THREE.AnimationMixer(model.scene)
             mixer.addEventListener('finished', onFinished)
+            if (ref.additionalActor) {
+                additional = await loadAdditionalActor(ref.additionalActor, model, modelAbort.signal,
+                    () => { if (state.ready) { resume(); render() } },
+                    error => {
+                        if (disposed) return
+                        stop()
+                        state.error = error instanceof Error ? error.message : String(error)
+                        notify()
+                        render()
+                    })
+                if (disposed) { additional.dispose(); return }
+                scene.add(additional.group)
+            }
             const box = visibleBounds(model.scene)
+            if (additional) box.union(visibleBounds(additional.group))
             const center = box.getCenter(new THREE.Vector3())
             const radius = Math.max(box.getSize(new THREE.Vector3()).length() / 2, .001)
             const halfFov = Math.atan(Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2) * Math.min(1, camera.aspect))
@@ -285,8 +301,12 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             state.loading = false
             notify()
             render()
+            resume()
         } catch (error) {
-            if (model) { disposeGLTF(model); scene.remove(model.scene); model = undefined }
+            additional?.dispose()
+            materialClock = undefined
+            mixer?.removeEventListener('finished', onFinished)
+            if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
             if (disposed || modelAbort.signal.aborted) return
             state.loading = false
             state.error = error instanceof Error ? error.message : String(error)
