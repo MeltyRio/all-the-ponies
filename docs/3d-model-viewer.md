@@ -13,12 +13,25 @@ Use this ATP PR together with [game-data PR #1](https://github.com/all-the-ponie
 (`MeltyRio/game-data`, branch `codex/3d-resource-association`). Conversion and
 native discovery belong to game-data; ATP does not have a Python converter.
 
-First obtain a completed local output from that game-data branch. It must contain
+In a new review directory, check out the ATP PR branch:
+
+```sh
+git clone --branch feature/3d-model-viewer --single-branch \
+  https://github.com/MeltyRio/all-the-ponies.git atp-3d-review
+cd atp-3d-review
+```
+
+Use Node.js 22.12 or newer and pnpm 10.28.2. First obtain a completed local
+output from that game-data branch. It must contain
 `models_3d.json` and every referenced file under `models/3d/`. Existing upstream
 outputs without the new catalogue cannot provide 3D models. Game resources are
 not included in either PR; the demo reads resources you have generated locally.
+If you already have that output, you do not need Python, ARK files or an APK to
+run the viewer. Otherwise follow the producer's
+[review input checklist and offline build](https://github.com/MeltyRio/game-data/blob/codex/3d-resource-association/docs/3d-resource-associations.md#prepare-real-game-resources-for-local-review)
+first; one isolated RK/ANIM pair is not enough for its normal pipeline.
 
-From the ATP checkout, use pnpm 10.28.2 and the frozen lockfile:
+From the ATP checkout, install with the frozen lockfile and start the demo:
 
 ```sh
 pnpm install --frozen-lockfile
@@ -27,6 +40,8 @@ pnpm demo:model-viewer
 ```
 
 Open `http://127.0.0.1:5195` in a browser. No domain, bucket or deployment is needed.
+This address refers to the computer running the command: another reviewer starts
+their own local server, rather than connecting to the contributor's localhost.
 The page lists the actual catalogue identities. Search for an Object ID, select
 it and use the 3D button to open ATP's real viewer. Pony, Pet and pre-generated
 Costume entries use their own IDs; costumes may use native names such as `SET_*`.
@@ -43,6 +58,14 @@ rotation, and Reset restores the view and pose. Supported additional actors and
 native materials load with the selected resource; they do not need separate demo
 switches. The demo does not add unsupported game events or interactive clothing.
 
+For a first check, select `Pony_Twilight_Sparkle`, open the 3D viewer and click
+`gen_idle_00` if listed. The model starts at rest; parent animations do not
+autoplay. This pony and that clip were verified with retained 11.4.3c inputs.
+Other verified examples are `Pet_Winona`, `SET_TW_1` (a complete costume),
+`Pony_Auto_Jack` (an additional actor) and `Pony_Princess_Celestia` (hair material).
+They are examples, not assets bundled with the demo or a guarantee for every
+input version. Use only entries and actions actually generated in your catalogue.
+
 Keep the terminal running; Ctrl+C stops the local servers. `MODEL_VIEWER_PORT`
 overrides the page port. Missing `MODEL_VIEWER_ASSETS` or an unreadable catalogue
 stops startup with instructions. There is no built-in model or generated fallback.
@@ -56,6 +79,10 @@ ATP's existing `createAssetUrl`; this demo does not upload or contact its CDN.
 ### Generate a local output when needed
 
 Use game-data's [setup and build instructions](https://github.com/MeltyRio/game-data/blob/codex/3d-resource-association/README.md).
+The [review input checklist](https://github.com/MeltyRio/game-data/blob/codex/3d-resource-association/docs/3d-resource-associations.md#prepare-real-game-resources-for-local-review)
+includes the exact branch, native resource categories, directory layout and an
+output check for Twilight and her animations. Use its local commands, not the
+README's upload example or the Docker image's default upload command.
 The normal build runs Transformer and then model generation. For a local review,
 use complete, successfully extracted inputs for one fixed game version and an
 isolated raw/output directory. For example, from the game-data checkout:
@@ -76,6 +103,13 @@ the specified output before Transformer, so use a new output path. Skipping
 normal image/SWF tools. Do not add `--skip transform` for an empty output.
 This command does not request uploads. Point `MODEL_VIEWER_ASSETS` at the resulting
 `new-review-dist`, without copying game files into the ATP checkout.
+
+If an expected identity is absent, inspect `isolated-raw/model-associations.json`
+(`generation.excluded` and `identities[ObjectID]`) for its actual dependency or
+support diagnostic. If the viewer reports a missing file or integrity error,
+check that the catalogue and the entire referenced `models/3d/` tree came from
+the same completed build, then restart the demo. Do not rename another model to
+the missing ID or combine a new catalogue with old GLBs.
 
 ## Tests
 
