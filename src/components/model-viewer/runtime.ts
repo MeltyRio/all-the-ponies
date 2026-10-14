@@ -1,10 +1,12 @@
 import * as THREE from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { bindAnimation, jointObjects, rigMetadata } from './animation';
+import { bindAnimation, jointObjects, rigMetadata, type BoundAnimation } from './animation';
 import { disposeGLTF, loadGLB, type AnimationRef, type ModelRef } from './assets';
 import { loadAdditionalActor, type AdditionalActor } from './additional';
 import { applyNativeDepth, nativeUVClock } from './native-materials';
+import { hitsModel, nativeGestures, prepareNativeEyes } from './interactions';
+import { createNativeEmitters } from './emitter';
 
 export type ViewerState = {
     ready: boolean,
@@ -57,6 +59,8 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     let model: GLTF | undefined
     let additional: AdditionalActor | undefined
     let materialClock: ReturnType<typeof nativeUVClock> | undefined
+    let eyes: Awaited<ReturnType<typeof prepareNativeEyes>>
+    let effects: Awaited<ReturnType<typeof createNativeEmitters>> | undefined
     let mixer: THREE.AnimationMixer | undefined
     let rest: {object: THREE.Object3D, position: THREE.Vector3, quaternion: THREE.Quaternion, scale: THREE.Vector3}[] = []
     let initial: {position: THREE.Vector3, target: THREE.Vector3, polar: number} | undefined
@@ -66,9 +70,12 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     let finished = false
     const modelAbort = new AbortController()
     let animationAbort: AbortController | undefined
-    const clips = new Map<string, THREE.AnimationClip>()
+    const clips = new Map<string, BoundAnimation>()
+    let activeClip: BoundAnimation | undefined
+    let elapsed = 0, eventCursor = 0
+    const gestures = nativeGestures()
     const notify = () => changed({...state})
-    const render = () => { if (!disposed && model) renderer.render(scene, camera) }
+    const render = () => { if (!disposed && model) { effects?.render(); renderer.render(scene, camera) } }
 
     function cancelFrame() {
         cancelAnimationFrame(frameId)
@@ -83,44 +90,65 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         }
         model?.scene.updateMatrixWorld(true)
         additional?.place()
+        eyes?.reset()
     }
-    function stop() {
+    function stop(keepEffects = false) {
         generation++
         animationAbort?.abort()
         animationAbort = undefined
         cancelFrame()
         mixer?.stopAllAction()
         restore()
+        activeClip = undefined
+        elapsed = eventCursor = 0
+        if (!keepEffects) effects?.reset()
         state.playing = false
         state.loading = !state.ready
         state.activeAnimation = ''
         finished = false
         resume()
     }
+    function applyEvents() {
+        if (!activeClip) return
+        const events = activeClip.nativeEvents
+        // Walk every crossed event, including frame zero and same-frame order.
+        while (eventCursor < events.length && events[eventCursor].frame <= Math.floor(elapsed * activeClip.nativeFPS)) {
+            const event = events[eventCursor++]
+            if (event.type === 'EyeSet') eyes!.set(event)
+            else effects!.trigger(event.effect, Math.max(0, elapsed - event.frame / activeClip.nativeFPS))
+        }
+    }
+    const ticking = () => state.playing || additional?.running() || materialClock?.active || eyes?.active || effects?.active
     function frame(time: number) {
         frameId = 0
-        if (disposed || document.hidden || (!state.playing && !additional?.running() && !materialClock?.active)) return
+        if (disposed || document.hidden || !ticking()) return
         const delta = lastTime === undefined ? 0 : Math.min((time - lastTime) / 1000, .1)
         lastTime = time
-        if (state.playing) mixer!.update(delta)
+        effects?.update(delta)
+        if (state.playing) {
+            elapsed += delta
+            mixer!.update(delta)
+            applyEvents()
+        }
         // Restore after mixer.update has applied its bindings, not from inside
         // the mixer's finished event, where it is still updating this frame.
         if (finished) {
-            stop()
+            stop(true)
             notify()
         }
         additional?.update(delta)
         materialClock?.update(delta)
+        eyes?.update(delta)
         render()
         resume()
     }
     function resume() {
-        if (!disposed && state.ready && !document.hidden && (state.playing || additional?.running() || materialClock?.active) && !frameId) {
+        if (!disposed && state.ready && !document.hidden && ticking() && !frameId) {
             frameId = requestAnimationFrame(frame)
         }
     }
     function visibility() {
-        if (document.hidden) cancelFrame()
+        if (document.hidden) { cancelFrame(); gestures.clear() }
         else { resume(); render() }
     }
     function resize() {
@@ -144,12 +172,14 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     }
     function reset() {
         stop()
+        gestures.clear(true)
         state.error = ''
         additional?.restart()
         resetCamera()
         notify()
     }
     function setFree(free: boolean) {
+        gestures.clear(true)
         state.free = free
         controls.enableZoom = free
         controls.touches.TWO = free ? THREE.TOUCH.DOLLY_PAN : undefined
@@ -172,10 +202,35 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         camera.position.copy(controls.target).add(offset)
         controls.update()
     }
+    function pointerdown(event: PointerEvent) {
+        if (!state.ready || disposed || document.hidden) return
+        gestures.down(event, controls.enabled && controls.enableRotate)
+    }
+    function pointermove(event: PointerEvent) {
+        if (controls.enabled) gestures.move(event, canvas.clientHeight, controls.rotateSpeed)
+    }
+    function pointerup(event: PointerEvent) {
+        const intent = gestures.up(event, canvas.clientHeight, controls.rotateSpeed,
+            state.ready && !disposed && !document.hidden && controls.enabled)
+        if (!intent || !model || !ref.interactions) return
+        if (intent === 'dizzy') {
+            const animation = ref.animations.find(item => item.id === ref.interactions!.dizzyAnimation)
+            if (animation) void play(animation)
+        } else if (hitsModel(model, camera, canvas, event)) {
+            let candidates = ref.animations.filter(item => ref.interactions!.clickAnimations.includes(item.id))
+            if (candidates.length > 1) candidates = candidates.filter(item => item.id !== state.activeAnimation)
+            const animation = candidates[Math.floor(Math.random() * candidates.length)]
+            if (animation) void play(animation)
+        }
+    }
     const observer = new ResizeObserver(resize)
     observer.observe(host)
     controls.addEventListener('change', render)
     canvas.addEventListener('keydown', keydown)
+    canvas.addEventListener('pointerdown', pointerdown)
+    canvas.addEventListener('pointermove', pointermove)
+    canvas.addEventListener('pointerup', pointerup)
+    canvas.addEventListener('pointercancel', pointerup)
     document.addEventListener('visibilitychange', visibility)
     const onFinished = () => { finished = true }
 
@@ -193,7 +248,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             let clip = clips.get(animation.sha256)
             if (!clip) {
                 const source = await loadGLB(animation, abort.signal)
-                try { clip = await bindAnimation(model, source, animation) }
+                try { clip = await bindAnimation(model, source, animation, true) }
                 finally { disposeGLTF(source) }
                 if (disposed || abort.signal.aborted || token !== generation) return
                 clips.set(animation.sha256, clip)
@@ -204,8 +259,10 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             state.loading = false
             state.playing = true
             state.activeAnimation = animation.id
+            activeClip = clip
             mixer!.clipAction(clip).reset().setLoop(THREE.LoopOnce, 1).play()
             mixer!.update(0)
+            applyEvents()
             additional?.place()
             notify()
             render()
@@ -225,10 +282,18 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         stop()
         modelAbort.abort()
         additional?.dispose()
+        effects?.dispose()
+        effects = undefined
+        eyes = undefined
+        gestures.clear(true)
         observer.disconnect()
         controls.removeEventListener('change', render)
         controls.dispose()
         canvas.removeEventListener('keydown', keydown)
+        canvas.removeEventListener('pointerdown', pointerdown)
+        canvas.removeEventListener('pointermove', pointermove)
+        canvas.removeEventListener('pointerup', pointerup)
+        canvas.removeEventListener('pointercancel', pointerup)
         document.removeEventListener('visibilitychange', visibility)
         mixer?.removeEventListener('finished', onFinished)
         if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
@@ -244,6 +309,9 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             ...state, disposed, cachedAnimations: clips.size,
             ...(additional ? { additional: additional.snapshot() } : {}),
             ...(materialClock?.active ? { nativeMaterial: materialClock.snapshot() } : {}),
+            ...(eyes ? {eyes: eyes.snapshot()} : {}),
+            ...(effects ? {effects: effects.snapshot()} : {}),
+            spins: gestures.spins,
             polar: controls.getPolarAngle(), azimuth: controls.getAzimuthalAngle(), distance: controls.getDistance(),
             position: camera.position.toArray(), target: controls.target.toArray(),
             atRest: rest.every(item => item.object.position.distanceTo(item.position) < 1e-7
@@ -254,10 +322,18 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     resize()
     notify()
     const ready = (async () => {
+        let preparing: GLTF | undefined
         try {
             const loaded = await loadGLB(ref, modelAbort.signal)
             if (disposed) { disposeGLTF(loaded); return }
+            preparing = loaded
+            const nativeEyes = await prepareNativeEyes(loaded, modelAbort.signal)
+            const nativeEffects = await createNativeEmitters(loaded, scene, camera)
+            if (disposed || modelAbort.signal.aborted) { nativeEffects.dispose(); return }
             model = loaded
+            preparing = undefined
+            eyes = nativeEyes
+            effects = nativeEffects
             if (rigMetadata(model).key !== ref.rigKey) throw new Error('Model rig identity mismatch')
             if (model.animations.length) throw new Error('Static model unexpectedly contains animations')
             applyNativeDepth(model)
@@ -304,6 +380,9 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             resume()
         } catch (error) {
             additional?.dispose()
+            effects?.dispose()
+            effects = undefined
+            eyes = undefined
             materialClock = undefined
             mixer?.removeEventListener('finished', onFinished)
             if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
@@ -311,6 +390,8 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             state.loading = false
             state.error = error instanceof Error ? error.message : String(error)
             notify()
+        } finally {
+            if (preparing) disposeGLTF(preparing)
         }
     })()
     return {ready, play, reset, setFree, dispose, snapshot}

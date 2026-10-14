@@ -204,3 +204,24 @@ test('old flat keys and two named revisions remain independently verifiable', as
     assert.deepEqual(Buffer.from(await verifiedBytes(previous, signal())), bytes)
     assert.deepEqual(Buffer.from(await verifiedBytes(ref, signal())), bytes)
 })
+
+test('catalogue v3 explicitly enables only exported native click and dizzy identities', async () => {
+    const interactions = {version: 1, clickAnimations: ['move'], dizzyAnimation: 'move'}
+    let catalogue: any = {schemaVersion: 3, models: {Pony_Test: {...model, interactions}}}
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+    assert.deepEqual((await resolveModel('Pony_Test', signal()))!.interactions, interactions)
+    for (const invalid of [
+        {...interactions, version: 2}, {...interactions, clickAnimations: ['missing']},
+        {...interactions, clickAnimations: ['move', 'move']}, {...interactions, dizzyAnimation: 'missing'},
+        {...interactions, inventedAction: 'move'},
+    ]) {
+        catalogue.models.Pony_Test.interactions = invalid
+        await assert.rejects(resolveModel('Pony_Test', signal()))
+    }
+    catalogue.models.Pony_Test.interactions = interactions
+    for (const version of [1, 2]) {
+        catalogue.schemaVersion = version
+        await assert.rejects(resolveModel('Pony_Test', signal()), /Unsupported interaction controller/)
+    }
+})

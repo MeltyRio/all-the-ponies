@@ -79,6 +79,25 @@ test('rejects native events rather than silently playing without their props', a
     await assert.rejects(bindAnimation(model.gltf, source.gltf, ref), /events are not supported/)
 })
 
+test('supported events require an explicit controller and preserve STEP/native sampling contracts', async () => {
+    for (const sampling of ['step', 'native']) {
+        const {model, source, ref} = sampling === 'native' ? nativeFixture() : fixture()
+        model.json.extras.atpInteractions = {version: 1, eyes: {Open: [0], Closed: [1]}}
+        const events = [{frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: false},
+            {frame: 1, type: 'EyeSet', state: 'Open', enableBlink: true}]
+        source.json.extras.atpClip.eventProfile = 'ponybook-v1'
+        source.json.extras.atpClip.events = events
+        await assert.rejects(bindAnimation(model.gltf, source.gltf, ref), /events are not supported/)
+        const clip = await bindAnimation(model.gltf, source.gltf, ref, true)
+        assert.deepEqual(clip.nativeEvents, events)
+        assert.equal(clip.nativeFPS, 2)
+        assert.notEqual(clip.nativeEvents, events)
+        assert.equal(clip.tracks[0].getInterpolation(), sampling === 'native' ? undefined : InterpolateDiscrete)
+        source.json.extras.atpClip.events.push({frame: 1, type: 'Sound', file: 'unhandled'})
+        await assert.rejects(bindAnimation(model.gltf, source.gltf, ref, true), /Unsupported native animation event/)
+    }
+})
+
 test('rejects duplicate channels, unsupported interpolation and duration mismatches', async () => {
     for (const mutation of ['duplicate', 'interpolation', 'duration']) {
         const {model, source, ref} = fixture()

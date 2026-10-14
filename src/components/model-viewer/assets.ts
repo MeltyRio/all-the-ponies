@@ -27,6 +27,7 @@ export interface AdditionalActorRef {
 
 export interface ModelRef extends ActorRef {
     additionalActor?: AdditionalActorRef
+    interactions?: {version: 1, clickAnimations: string[], dizzyAnimation?: string}
 }
 
 const cataloguePath = 'models_3d.json'
@@ -111,14 +112,23 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
         schemaVersion: number
         models: Record<string, ModelRef>
     }
-    check([1, 2].includes(catalogue?.schemaVersion) && catalogue.models && typeof catalogue.models === 'object'
+    check([1, 2, 3].includes(catalogue?.schemaVersion) && catalogue.models && typeof catalogue.models === 'object'
         && !Array.isArray(catalogue.models), 'Unsupported 3D catalogue')
     if (!Object.prototype.hasOwnProperty.call(catalogue.models, identity)) return null
     const model = catalogue.models[identity]
     checkActor(model, false, identity)
     if (Object.prototype.hasOwnProperty.call(model, 'additionalActor')) {
-        check(catalogue.schemaVersion === 2, 'Additional actors require catalogue version 2')
+        check(catalogue.schemaVersion >= 2, 'Additional actors require catalogue version 2 or later')
         checkAdditionalActor(model.additionalActor!)
+    }
+    if (Object.prototype.hasOwnProperty.call(model, 'interactions')) {
+        const value = model.interactions
+        check(catalogue.schemaVersion === 3 && value?.version === 1
+            && Object.keys(value).every(key => ['version', 'clickAnimations', 'dizzyAnimation'].includes(key)), 'Unsupported interaction controller')
+        const ids = new Set(model.animations.map(animation => animation.id))
+        check(Array.isArray(value.clickAnimations) && new Set(value.clickAnimations).size === value.clickAnimations.length
+            && value.clickAnimations.every(id => ids.has(id)), 'Invalid click animation reference')
+        check(value.dizzyAnimation === undefined || ids.has(value.dizzyAnimation), 'Invalid dizzy animation reference')
     }
     return model
 }

@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import * as THREE from 'three'
+import { nativeGestures } from '../../src/components/model-viewer/interactions'
 
 // Execute the actual runtime and attachment bodies with real Three.js math and
 // AnimationMixer. Only browser, asset I/O and metadata boundaries are replaced;
@@ -28,7 +29,7 @@ function model(name: string) {
     return { name, scene, bone, scenes: [scene], animations: [] }
 }
 
-function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' = 'normal') {
+function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' | 'eventful' | 'pending-effects' = 'normal') {
     const parent = model('parent')
     const child = model('child')
     parent.bone.position.set(1, 4, 2)
@@ -40,6 +41,16 @@ function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' = '
     let frameId = 0
     let childRequested = false
     let childAborted = false
+    const eventLog: any[] = []
+    let effectRequested = false, effectsDisposed = 0, effectAge = -1
+    let completeEffects!: () => void
+    let expression = 'Open'
+    const effectController = {
+        get active() { return effectAge >= 0 && effectAge < 2 },
+        trigger(name: string, elapsed: number) { eventLog.push({name, elapsed}); effectAge = 0 },
+        update(delta: number) { if (effectAge >= 0) effectAge += delta },
+        render() {}, reset() { effectAge = -1 }, dispose() { effectsDisposed++ }, snapshot() { return {effectAge} },
+    }
     const document = {
         hidden: false,
         addEventListener(name: string, listener: () => void) { listeners.set(name, listener) },
@@ -101,10 +112,26 @@ function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' = '
         checkAdditionalActor() {},
         applyNativeDepth() {},
         nativeUVClock() { return { active: false, update() {}, snapshot() { return undefined } } },
+        nativeGestures,
+        async prepareNativeEyes() { return mode !== 'eventful' ? undefined : {
+            active: true, update() {}, set(event: any) { expression = event.state; eventLog.push(event) },
+            reset() { expression = 'Open' }, snapshot() { return {expression} },
+        } },
+        async createNativeEmitters() {
+            effectRequested = true
+            if (mode === 'pending-effects') await new Promise<void>(resolve => { completeEffects = resolve })
+            return effectController
+        },
         async bindAnimation(value: typeof parent) {
             const track = new THREE.VectorKeyframeTrack(`${value.bone.uuid}.position`, [0, 1],
                 value === parent ? [3, 9, 5, 3, 9, 5] : [0, 0, 0, 1, 0, 0], THREE.InterpolateLinear)
-            return new THREE.AnimationClip(value === parent ? 'Move' : 'Idle', 1, [track])
+            return Object.assign(new THREE.AnimationClip(value === parent ? 'Move' : 'Idle', 1, [track]), {
+                nativeFPS: 30, nativeEvents: mode !== 'eventful' || value !== parent ? [] : [
+                    {frame: 0, type: 'EyeSet', state: 'Happy', enableBlink: false},
+                    {frame: 1, type: 'EyeSet', state: 'Frown', enableBlink: false},
+                    {frame: 2, type: 'Emitter', effect: 'stars'},
+                ],
+            })
         },
     }
     const additional = sourceModule('additional.ts', injected)
@@ -120,6 +147,8 @@ function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' = '
         viewer, parent, child, animation, disposed, frames, changes, renders, listeners,
         childRequested: () => childRequested,
         childAborted: () => childAborted,
+        eventLog, effectRequested: () => effectRequested, effectsDisposed: () => effectsDisposed,
+        completeEffects: () => completeEffects(),
         tick(time: number) {
             assert.equal(frames.size, 1, 'the viewer must own exactly one animation frame')
             const [id, callback] = frames.entries().next().value!
@@ -202,4 +231,48 @@ test('a failed initial child animation releases both models and never publishes 
     } finally { f.close() }
     assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
     assert.equal(f.disposed.filter(name => name === 'child').length, 1)
+})
+
+test('runtime dispatches frame zero and all crossed events, restoring eyes but preserving the finite effect tail', async () => {
+    const f = fixture('eventful')
+    try {
+        await f.viewer.ready
+        await f.viewer.play(f.animation)
+        assert.equal(f.viewer.snapshot().eyes.expression, 'Happy')
+        f.tick(0)
+        f.tick(100)
+        assert.equal(f.viewer.snapshot().eyes.expression, 'Frown')
+        assert.equal(f.eventLog.length, 3)
+        assert.equal(f.eventLog[2].name, 'stars')
+        assert.ok(Math.abs(f.eventLog[2].elapsed - 1 / 30) < 1e-12)
+        f.hidden(true)
+        const age = f.viewer.snapshot().effects.effectAge
+        f.hidden(false); f.tick(5000)
+        assert.equal(f.viewer.snapshot().effects.effectAge, age)
+        for (let i = 1; i <= 11; i++) f.tick(5000 + i * 100)
+        assert.equal(f.viewer.snapshot().playing, false)
+        assert.equal(f.viewer.snapshot().atRest, true)
+        assert.equal(f.viewer.snapshot().eyes.expression, 'Open')
+        assert.ok(f.viewer.snapshot().effects.effectAge >= 0, 'natural completion must not discard active particles')
+        f.viewer.reset()
+        assert.equal(f.viewer.snapshot().effects.effectAge, -1)
+        assert.equal(f.eventLog.length, 3, 'completed events must not replay on reset')
+    } finally { f.close() }
+    assert.equal(f.effectsDisposed(), 1)
+})
+
+test('disposing during effect dependency preparation releases the late result without reviving the viewer', async () => {
+    const f = fixture('pending-effects')
+    try {
+        for (let attempts = 0; attempts < 100 && !f.effectRequested(); attempts++) await Promise.resolve()
+        assert.equal(f.effectRequested(), true)
+        f.viewer.dispose()
+        assert.equal(f.disposed.filter(name => name === 'parent').length, 0, 'pending preparation retains ownership until its dependency finishes')
+        f.completeEffects()
+        await f.viewer.ready
+        assert.equal(f.effectsDisposed(), 1)
+        assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
+        assert.equal(f.changes.some(state => state.ready), false)
+        assert.equal(f.frames.size, 0)
+    } finally { f.close() }
 })

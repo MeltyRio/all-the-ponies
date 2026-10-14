@@ -19,6 +19,11 @@ test('schema 2 resolves independent child rigs and a native scene transform', as
     assert.deepEqual((await resolve(2, additional()))?.additionalActor, additional())
 })
 
+test('schema 3 preserves the same independent child contract', async () => {
+    const row = await resolve(3, additional())
+    assert.deepEqual(row.additionalActor, additional())
+})
+
 test('schema 1 cannot silently omit a child; null and nested children reject', async () => {
     await assert.rejects(resolve(1, additional()), /version 2/)
     await assert.rejects(resolve(1, null), /version 2/)

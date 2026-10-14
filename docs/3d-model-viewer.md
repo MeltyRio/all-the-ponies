@@ -185,23 +185,34 @@ external buffer/image URIs inside GLBs are rejected. Hosting must allow browser
 GET/CORS and deliver GLB bytes unchanged. CSP/cache/deployment policies remain
 owned by ATP.
 
-The reader accepts catalogue versions 1 and 2. Version 2 is required for an
+The reader accepts catalogue versions 1, 2 and 3. Version 2 is required for an
 additional actor or a native material UV clock; a plain catalogue remains version
-1. This prevents an older reader from silently showing an incomplete scene.
+1. Version 3 adds the optional native interaction profile below. Deploy this
+reader before publishing schema-3 data: older clients reject it instead of
+silently omitting required interaction behavior.
 The same upload reference checks include the additional actor's model and clips.
 
 ## Model and animation boundary
 
 A model GLB contains mesh, embedded texture, material, bind matrices and rest
-skeleton, but no animation. An animation GLB contains joints and standard STEP
-tracks, plus optional native interpolation samples, but no mesh or texture. Both
-use ordinary glTF 2.0 structures plus small extras:
+skeleton, but no animation. Verified PonyBook previews use the first frame of the
+native Conversation idle on opening, action completion and Reset, without parent
+autoplay. World previews and pets use their own producer-selected rest poses.
+
+An animation GLB contains joints and standard STEP tracks, plus optional native
+interpolation samples, but no mesh or texture. Both use ordinary glTF 2.0
+structures plus small extras:
 
 - `atpRig`: version, coordinate convention, indexed hierarchy and compatibility
   key derived from the explicitly selected native animation library content.
 - `atpClip`: native FPS, frame count and duration; optional `nativeSampling`
   version 1 references FLOAT VEC3 positions and VEC4 raw XYZW quaternion
-  accessors in frame-major, joint-major order.
+  accessors in frame-major, joint-major order. Optional `eventProfile: "ponybook-v1"`
+  carries ordered native `EyeSet` and supported `Emitter` records.
+- `atpInteractions`: model-side native eye mesh indices, hidden node indices
+  and any embedded finite emitter definitions/textures. Eye nodes outside the
+  default scene are loaded explicitly with the same skeleton; their declared
+  visibility is applied before material setup, camera fitting or first render.
 - `atpNativeDepth`: native material depth test/write flags not represented by
   standard glTF material fields.
 - `atpNativeUVClock`: the reviewed native hair controller's initial value, speed
@@ -285,15 +296,53 @@ is deferred to mounted client code, so SSR does not require WebGL.
 Controls retain ATP's gradient and menu dark-fill focus feedback without an
 additional browser outline.
 
+### Native PonyBook interactions
+
+Regenerated game-data output may provide `interactions: {version: 1,
+clickAnimations: [...], dizzyAnimation?: id}` for a Pony or its pre-generated
+Costume. ATP does not infer these lists from names. Pets and older catalogues
+keep their existing playback controls.
+
+When the selected native Open/Closed meshes exist, are distinct, and match the
+default appearance, the viewer blinks with a 2–5 second open interval and a
+0.1 second closed interval. It retains the native timer update order and
+`EyeSet` expression/EnableBlink changes. Empty or unresolved eye groups do not
+invent geometry. Events use integer native frames; pose interpolation remains
+independent. Every crossed event runs in source order, including frame zero.
+
+A mouse click or single-finger tap must hit the currently visible skinned
+model. Blank space, dragging, cancellation, modifier/right buttons and multiple
+fingers cannot trigger an action. The viewer chooses among the supplied native
+click entries, excluding the current action when another is available. This is
+a viewer policy over native allowed actions, not a reproduction of the game's
+remote-service random gate or directional action selection.
+
+Four qualifying horizontal rotation releases play the supplied dizzy action.
+Each release uses signed displacement modulo 360 degrees and must be strictly
+over 220 degrees; its final pointerup displacement counts. Both locked and free
+rotation use this rule. Reset and mode changes clear the count. There is no
+fallback when the producer cannot validate that action or all of its events.
+
+The reviewed `mlp_arena_pony_defeat_02` event renders the original embedded
+texture and finite particle parameters as an additive, camera-facing effect
+at the model origin. No head-bone attachment or replacement artwork is guessed.
+A native dizzy action with no such event does not acquire synthetic stars.
+Normal clip completion restores the rest pose/default eyes and lets an active
+particle burst finish. Reset, replacing an action and closing clear the effects.
+Eyes, effects, poses, material clocks and companions share the existing paused
+page clock and resource lifecycle. The producer's source evidence and exclusions
+are described in game-data's `docs/3d-resource-associations.md`.
+
 ## Review scope and limitations
 
 This is a basic playback consumer. Native source discovery and default/outfit
 selection belong to game-data; a missing catalogue identity yields no button.
-Interactive clothing assembly, event-driven props, recursive companions, native
-event execution, task scenes and character-family action sorting are outside the
+Interactive clothing assembly, SubObject action props, recursive companions,
+general native event execution, task scenes and character-family action sorting are outside the
 viewer. One explicitly declared additional actor is supported as described above.
-A selected parent clip with events, including unknown events, is rejected rather
-than silently rendered without its behavior. In addition to ordinary materials,
+Only the versioned parent EyeSet/finite-emitter profile described above executes.
+Unknown events, unresolved event dependencies and eventful independent companions
+are rejected rather than silently rendered without their behavior. In addition to ordinary materials,
 game-data recognizes reviewed native horn and hair shaders by their exact source
 content: the inactive horn surface is represented by an alpha mask, and hair uses
 the verified UV clock. Unknown shader/controller combinations still fail; this

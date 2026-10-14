@@ -2,6 +2,9 @@ import { AnimationClip, Interpolant, Object3D, Quaternion, Vector3 } from 'three
 import type { TypedArray } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { AnimationRef } from './assets';
+import { nativeEvents, type NativeEvent } from './interactions';
+
+export type BoundAnimation = AnimationClip & {nativeEvents: NativeEvent[], nativeFPS: number}
 
 type Rig = {
     version: 1,
@@ -134,7 +137,7 @@ class NativeInterpolant extends Interpolant {
 }
 
 /** Bind by verified node indices, never bone names or bone count alone. */
-export async function bindAnimation(model: GLTF, animation: GLTF, ref: AnimationRef) {
+export async function bindAnimation(model: GLTF, animation: GLTF, ref: AnimationRef, allowNativeEvents = false): Promise<BoundAnimation> {
     const targetRig = rigMetadata(model)
     const sourceRig = rigMetadata(animation)
     const json = animation.parser.json
@@ -145,8 +148,7 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
     const metadata = json.extras?.atpClip
     check(Number.isInteger(metadata?.frameCount) && metadata.frameCount > 0
         && Number.isFinite(metadata.fps) && metadata.fps > 0, 'Invalid animation metadata')
-    check(metadata.events === undefined || Array.isArray(metadata.events) && metadata.events.length === 0,
-        'Animation events are not supported by the basic viewer')
+    const events = nativeEvents(model, metadata, allowNativeEvents)
     check(Math.abs(metadata.frameCount / metadata.fps - ref.duration) < 1e-4
         && Math.abs(metadata.duration - ref.duration) < 1e-4, 'Native animation timing mismatch')
     const source = animation.animations[0]
@@ -206,5 +208,5 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
         }
     }
     check(Math.abs(source.duration - ref.duration) < 1e-4, 'Animation duration mismatch')
-    return new AnimationClip(ref.name, source.duration, tracks)
+    return Object.assign(new AnimationClip(ref.name, source.duration, tracks), {nativeEvents: events, nativeFPS: metadata.fps})
 }
