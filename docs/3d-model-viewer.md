@@ -193,12 +193,15 @@ The same upload reference checks include the additional actor's model and clips.
 ## Model and animation boundary
 
 A model GLB contains mesh, embedded texture, material, bind matrices and rest
-skeleton, but no animation. An animation GLB contains joints and STEP tracks,
-but no mesh or texture. Both use ordinary glTF 2.0 structures plus small extras:
+skeleton, but no animation. An animation GLB contains joints and standard STEP
+tracks, plus optional native interpolation samples, but no mesh or texture. Both
+use ordinary glTF 2.0 structures plus small extras:
 
 - `atpRig`: version, coordinate convention, indexed hierarchy and compatibility
   key derived from the explicitly selected native animation library content.
-- `atpClip`: native FPS, frame count and duration.
+- `atpClip`: native FPS, frame count and duration; optional `nativeSampling`
+  version 1 references FLOAT VEC3 positions and VEC4 raw XYZW quaternion
+  accessors in frame-major, joint-major order.
 - `atpNativeDepth`: native material depth test/write flags not represented by
   standard glTF material fields.
 - `atpNativeUVClock`: the reviewed native hair controller's initial value, speed
@@ -213,6 +216,21 @@ Changing a native library invalidates its rig identity even if only one clip
 changed. The caller still must establish the RK/library association from native
 metadata; these formats alone do not prove that any arbitrary pair belongs
 together.
+
+For `nativeSampling` version 1, the viewer interpolates the original model-space
+positions linearly and raw quaternions with shortest-path normalized linear
+interpolation, then derives parent-local transforms for the existing Three
+mixer. Quaternion endpoint lengths are retained; normalizing before mixing or
+using parent-local SLERP would change the reviewed native result. Every stored
+pose is checked against the standard tracks before playback. The final frame
+remains held through the existing clip duration, and completion/Reset behavior
+is unchanged. This does not implement the game's multi-layer animation or queues.
+
+Older clips without `nativeSampling` continue to use STEP. Invalid or unknown
+sampling metadata is rejected rather than silently downgraded. Ordinary glTF
+viewers can still read the standard STEP tracks in new files. Regenerate local
+game-data output to exercise native interpolation; existing GLBs do not contain
+the original compressed quaternion lengths and cannot recover them from matrices.
 
 Each parent clip is fetched only when first selected, then reused within that viewer
 session. Content-addressed assets can use ordinary HTTP caching across sessions;

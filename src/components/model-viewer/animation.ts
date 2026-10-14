@@ -1,4 +1,5 @@
-import { AnimationClip, Object3D } from 'three';
+import { AnimationClip, Interpolant, Object3D, Quaternion, Vector3 } from 'three';
+import type { TypedArray } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { AnimationRef } from './assets';
 
@@ -47,6 +48,91 @@ export function jointObjects(gltf: GLTF) {
     return objects
 }
 
+/** v1 retains packed quaternion lengths: normalizing each key before NLERP
+ * changes the native result. Interpolate model-space poses, then derive locals.
+ * All tracks in one bound clip share this work for a given mixer time. */
+async function nativeSampler(animation: GLTF, parents: number[], frameCount: number, fps: number) {
+    const json = animation.parser.json
+    const metadata = json.extras.atpClip.nativeSampling
+    if (metadata === undefined) return undefined
+    check(metadata && metadata.version === 1
+        && Object.keys(metadata).sort().join(',') === 'rotations,translations,version', 'Unsupported native sampling profile')
+    const count = frameCount * parents.length
+    async function values(index: unknown, width: number, type: string) {
+        check(Number.isInteger(index) && (index as number) >= 0, 'Invalid native sampling accessor')
+        const definition = json.accessors[index as number]
+        check(definition?.componentType === 5126 && definition.type === type
+            && definition.count === count && !definition.normalized && !definition.sparse, 'Invalid native sampling layout')
+        const attribute = await animation.parser.getDependency('accessor', index as number)
+        check(attribute?.count === count && attribute.itemSize === width, 'Invalid loaded native sampling layout')
+        const result = new Float32Array(count * width)
+        for (let i = 0; i < count; i++) for (let k = 0; k < width; k++) {
+            const value = attribute.getComponent(i, k)
+            check(Number.isFinite(value), 'Non-finite native sampling value')
+            result[i * width + k] = value
+        }
+        return result
+    }
+    const translations = await values(metadata.translations, 3, 'VEC3')
+    const rotations = await values(metadata.rotations, 4, 'VEC4')
+    for (let i = 0; i < count; i++) {
+        check(Math.hypot(...rotations.subarray(i * 4, i * 4 + 4)) > .5, 'Degenerate native sampling quaternion')
+    }
+    const positions = parents.map(() => new Vector3())
+    const quaternions = parents.map(() => new Quaternion())
+    const localPositions = new Float64Array(parents.length * 3)
+    const localRotations = new Float64Array(parents.length * 4)
+    const inverse = new Quaternion(), local = new Quaternion(), point = new Vector3()
+    const result = {translation: localPositions, rotation: localRotations}
+    let previousTime = NaN
+    return (time: number) => {
+        if (time !== previousTime) {
+            previousTime = time
+            // Preserve the existing inclusive clip duration and held final frame.
+            const frame = Math.max(0, Math.min(time * fps, frameCount - 1))
+            const first = Math.floor(frame), next = Math.min(first + 1, frameCount - 1), phase = frame - first
+            for (let bone = 0; bone < parents.length; bone++) {
+                const a = (first * parents.length + bone), b = (next * parents.length + bone)
+                const p = positions[bone], q = quaternions[bone]
+                p.fromArray(translations, a * 3)
+                point.fromArray(translations, b * 3)
+                p.lerp(point, phase)
+                let dot = 0
+                for (let k = 0; k < 4; k++) dot += rotations[a * 4 + k] * rotations[b * 4 + k]
+                const sign = dot < 0 ? -1 : 1
+                q.set(...[0, 1, 2, 3].map(k => (1 - phase) * rotations[a * 4 + k]
+                    + phase * sign * rotations[b * 4 + k]) as [number, number, number, number]).normalize()
+            }
+            for (let bone = 0; bone < parents.length; bone++) {
+                const parent = parents[bone]
+                if (parent < 0) {
+                    positions[bone].toArray(localPositions, bone * 3)
+                    quaternions[bone].toArray(localRotations, bone * 4)
+                } else {
+                    inverse.copy(quaternions[parent]).conjugate()
+                    point.copy(positions[bone]).sub(positions[parent]).applyQuaternion(inverse).toArray(localPositions, bone * 3)
+                    local.multiplyQuaternions(inverse, quaternions[bone]).toArray(localRotations, bone * 4)
+                }
+            }
+        }
+        return result
+    }
+}
+
+class NativeInterpolant extends Interpolant {
+    constructor(times: TypedArray, values: TypedArray, size: number, result: TypedArray | undefined,
+        private sample: NonNullable<Awaited<ReturnType<typeof nativeSampler>>>,
+        private bone: number, private path: 'translation' | 'rotation') {
+        super(times, values, size, result)
+    }
+    evaluate(time: number) {
+        const values = this.sample(time)[this.path]
+        for (let k = 0; k < this.valueSize; k++) this.resultBuffer[k] = values[this.bone * this.valueSize + k]
+        return this.resultBuffer
+    }
+    interpolate_(_index: number, _start: number, time: number, _end: number) { return this.evaluate(time) }
+}
+
 /** Bind by verified node indices, never bone names or bone count alone. */
 export async function bindAnimation(model: GLTF, animation: GLTF, ref: AnimationRef) {
     const targetRig = rigMetadata(model)
@@ -70,6 +156,8 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
     check(source.tracks.length === definition.channels.length
         && source.tracks.length === targetRig.parents.length * 2, 'Animation track layout mismatch')
     const tracks = []
+    const nativeTracks: {bone: number, path: 'translation' | 'rotation', track: typeof source.tracks[number]}[] = []
+    const sample = await nativeSampler(animation, targetRig.parents, metadata.frameCount, metadata.fps)
     for (let index = 0; index < definition.channels.length; index++) {
         const channel = definition.channels[index]
         const sampler = definition.samplers[channel.sampler]
@@ -94,7 +182,28 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
             && track.times.every((time, frame) => Math.abs(time - frame / metadata.fps) < 1e-4), 'Native animation sample timing mismatch')
         const cloned = track.clone()
         cloned.name = `${joints.get(targetIndex)!.uuid}.${property}`
+        if (sample) {
+            const bone = targetRig.jointNodes.indexOf(targetIndex)
+            nativeTracks.push({bone, path, track})
+            Object.assign(cloned, {createInterpolant: (result?: TypedArray) =>
+                new NativeInterpolant(cloned.times, cloned.values, cloned.getValueSize(), result, sample, bone, path)})
+        }
         tracks.push(cloned)
+    }
+    // Validate once per source frame, sharing its whole-pose calculation.
+    if (sample) for (let frame = 0; frame <= metadata.frameCount; frame++) {
+        const expected = sample(frame / metadata.fps)
+        for (const {bone, path, track} of nativeTracks) {
+            const values = expected[path], size = path === 'translation' ? 3 : 4
+            let sign = 1
+            if (size === 4) {
+                let dot = 0
+                for (let k = 0; k < 4; k++) dot += values[bone * size + k] * track.values[frame * size + k]
+                sign = dot < 0 ? -1 : 1
+            }
+            for (let k = 0; k < size; k++) check(Math.abs(values[bone * size + k]
+                - sign * track.values[frame * size + k]) <= 1e-4, 'Native sampling disagrees with standard animation')
+        }
     }
     check(Math.abs(source.duration - ref.duration) < 1e-4, 'Animation duration mismatch')
     return new AnimationClip(ref.name, source.duration, tracks)
