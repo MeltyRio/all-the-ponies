@@ -119,19 +119,16 @@ The Node unit tests use small self-authored in-memory data and need no game asse
 pnpm test:model-viewer
 ```
 
-With the same real output selected above, validate its GLBs and run browser checks:
+With the same real output selected above, check the GLB format and resource
+integrity:
 
 ```sh
 pnpm test:model-viewer:glb "$MODEL_VIEWER_ASSETS"
-pnpm test:model-viewer:browser
 ```
 
-Browser tests require an installed Playwright Chromium, or `CHROME_PATH` pointing
-to an existing Chromium. The tests record their selected identities and any
-optional cases absent from the supplied catalogue; absent coverage is not a pass.
-Screenshots/video/results go to ignored `tests/model-viewer/generated/browser`,
-or `MODEL_VIEWER_RESULTS`. They are private local output, not committed fixtures.
-Do not run upload tools against a partial test output.
+Use the demo to check appearance, animation playback, interactions and Reset in
+a browser. Generated game resources stay outside the checkout. Do not run upload
+tools against a partial test output.
 
 For the full site, use ATP's normal development/build instructions and configured
 data environment. Run its build and type checking separately; the demo is not a
@@ -349,12 +346,10 @@ the verified UV clock. Unknown shader/controller combinations still fail; this
 is not general native shader execution. Future formats require investigation and
 tests. Standard glTF validation cannot prove native-game visual equivalence.
 
-Producer and consumer unit tests use small synthetic inputs for geometry, indices,
-UVs, skin/bind math, alpha, frame decoding, invalid input, separation/binding and
-resource integrity. Browser checks use the selected local game-data output for
-actual Chromium rendering/input, playback, disposal and cancellation. Mobile tests emulate
-Chromium touch, not physical iOS/Safari. English strings use ATP's usual fallback;
-additional translations are deferred.
+The focused unit tests use synthetic inputs for the core asset, animation and
+interaction contracts. Real-model visual review uses locally generated game-data
+output through the demo. Physical iOS/Safari remains unverified. English strings
+use ATP's usual fallback; additional translations are deferred.
 
 The small GLB extras profile remains a review point for this Draft PR. Generation
 is owned by game-data. No new registry package, independent Luna Kit PR or

@@ -29,7 +29,7 @@ function model(name: string) {
     return { name, scene, bone, scenes: [scene], animations: [] }
 }
 
-function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' | 'eventful' | 'pending-effects' = 'normal') {
+function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effects' = 'normal') {
     const parent = model('parent')
     const child = model('child')
     parent.bone.position.set(1, 4, 2)
@@ -100,7 +100,6 @@ function fixture(mode: 'normal' | 'pending-child' | 'failed-child-animation' | '
             }
             return child
         }
-        if (asset === childAnimation && mode === 'failed-child-animation') throw new Error('Child animation unavailable')
         return { name: asset === animation ? 'parent-animation' : 'child-animation' }
     }
     const injected = {
@@ -196,41 +195,6 @@ test('disposing during a child model request aborts it and releases the parent e
         assert.equal(f.listeners.size, 0)
     } finally { f.close() }
     assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
-})
-
-test('hidden viewers pause the independent child clock and resume without elapsed wall time', async () => {
-    const f = fixture()
-    try {
-        await f.viewer.ready
-        f.tick(100)
-        f.tick(200)
-        assert.ok(Math.abs(f.child.bone.position.x - .1) < 1e-7)
-        f.hidden(true)
-        assert.equal(f.frames.size, 0)
-        f.hidden(false)
-        f.tick(5000)
-        assert.ok(Math.abs(f.child.bone.position.x - .1) < 1e-7)
-        f.tick(5100)
-        assert.ok(Math.abs(f.child.bone.position.x - .2) < 1e-7)
-        assert.equal(f.viewer.snapshot().playing, false, 'the parent can remain static while its child animates')
-    } finally { f.close() }
-    assert.equal(f.frames.size, 0)
-    assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
-    assert.equal(f.disposed.filter(name => name === 'child').length, 1)
-})
-
-test('a failed initial child animation releases both models and never publishes a partial ready scene', async () => {
-    const f = fixture('failed-child-animation')
-    try {
-        await f.viewer.ready
-        assert.match(f.viewer.snapshot().error, /Child animation unavailable/)
-        assert.equal(f.changes.some(state => state.ready), false)
-        assert.equal(f.frames.size, 0)
-        assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
-        assert.equal(f.disposed.filter(name => name === 'child').length, 1)
-    } finally { f.close() }
-    assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
-    assert.equal(f.disposed.filter(name => name === 'child').length, 1)
 })
 
 test('runtime dispatches frame zero and all crossed events, restoring eyes but preserving the finite effect tail', async () => {

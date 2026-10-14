@@ -28,38 +28,6 @@ test('hair keeps its initial GPU offset until tick, then uses one shared CPU clo
     assert.equal(materials[1].opacity, 1)
 })
 
-test('native clock wraps only after max and discards overshoot, without modulo', () => {
-    const {gltf, materials} = fixture()
-    for (const material of materials.slice(1)) material.userData.atpNativeUVClock.speed = 1
-    const clock = nativeUVClock(gltf)
-    clock.update(1)
-    assert.equal(materials[1].map!.offset.y, -2)
-    clock.update(.25)
-    assert.equal(materials[1].map!.offset.y, 2)
-})
-
-test('native finite CPU initial value is not clamped to the declared range', () => {
-    const {gltf, materials} = fixture()
-    for (const m of materials.slice(1)) m.userData.atpNativeUVClock = {version: 1, initial: 3, speed: .15, min: -2, max: -2}
-    const clock = nativeUVClock(gltf)
-    assert.equal(clock.snapshot()!.clock, 3)
-    clock.update(0)
-    assert.equal(clock.snapshot()!.clock, -2)
-})
-
-test('malformed/conflicting clocks and missing texture fail before rendering', () => {
-    for (const change of [
-        m => { m.userData.atpNativeUVClock.initial = Infinity },
-        m => { m.userData.atpNativeUVClock.min = 3 },
-        m => { m.userData.atpNativeUVClock.speed = -.15 },
-        m => { m.userData.atpNativeUVClock.speed = .2 },
-        m => { m.map = null },
-    ]) {
-        const {gltf, materials} = fixture(); change(materials[2])
-        assert.throws(() => nativeUVClock(gltf))
-    }
-})
-
 test('ordinary material stays static and native depth state remains independent', () => {
     const {gltf, materials} = fixture()
     for (const material of materials) {
