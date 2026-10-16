@@ -67,3 +67,38 @@ test('billboard uses model origin, original particle coordinates, additive depth
     emitter.dispose(); assert.deepEqual(calls, {dispose: 1, close: 1})
     assert.throws(() => emitter.trigger('mlp_arena_pony_defeat_02'))
 })
+
+
+test('late native events age the initialized burst and expired seeks create no fresh particles', async () => {
+    const profile = fixture()
+    profile.particle.timeWarp = 2
+    const {gltf} = fakeGLTF(profile), scene = new THREE.Scene(), camera = new THREE.PerspectiveCamera()
+    scene.add(gltf.scene)
+    const emitter = await createNativeEmitters(gltf, scene, camera)
+    try {
+        emitter.trigger('mlp_arena_pony_defeat_02', 1)
+        assert.equal(emitter.active, true)
+        assert.equal(emitter.snapshot()[0]!.particles.length, 3)
+        for (const particle of emitter.snapshot()[0]!.particles) {
+            close(particle.age, 2)
+            assert.equal(particle.segment, 1)
+            close(particle.value[7]!, .5)
+        }
+        emitter.render()
+        const group = scene.children.find(child => child !== gltf.scene)!
+        for (const object of group.children) close((object as THREE.Mesh<THREE.PlaneGeometry, THREE.MeshBasicMaterial>).material.opacity, .5)
+        emitter.reset()
+        emitter.trigger('mlp_arena_pony_defeat_02', 1.5)
+        assert.equal(emitter.active, false)
+        assert.equal(emitter.snapshot().flatMap(instance => instance.particles).length, 0)
+        assert.equal(scene.children.length, 1, 'expired catch-up must not retain an inactive GPU instance')
+        emitter.trigger('mlp_arena_pony_defeat_02', 10)
+        emitter.update(.1)
+        assert.equal(emitter.active, false)
+        assert.equal(scene.children.length, 1)
+        emitter.trigger('mlp_arena_pony_defeat_02', 0)
+        assert.equal(emitter.snapshot()[0]!.particles.length, 0, 'on-time events retain first-positive-update emission')
+        emitter.update(.1)
+        close(emitter.snapshot()[0]!.particles[0]!.age, 0)
+    } finally { emitter.dispose() }
+})

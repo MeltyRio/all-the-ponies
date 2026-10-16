@@ -5,6 +5,21 @@ import validator from 'gltf-validator'
 
 const root = path.resolve(process.argv[2] || 'tests/model-viewer/generated')
 const catalogue = JSON.parse(await fs.readFile(path.join(root, 'models_3d.json'), 'utf8'))
+const table = catalogue.animationAssets
+if (Object.prototype.hasOwnProperty.call(catalogue, 'animationAssets')
+    && (catalogue.schemaVersion !== 4 || !Array.isArray(table))) {
+    throw new Error('Animation asset tables require catalogue version 4')
+}
+function animationRef(value) {
+    if (typeof value === 'number') {
+        if (catalogue.schemaVersion !== 4 || !table || !Number.isSafeInteger(value)
+            || value < 0 || value >= table.length) throw new Error('Invalid compact animation asset reference')
+        value = table[value]
+    }
+    if (!value || typeof value !== 'object' || Array.isArray(value)
+        || Object.prototype.hasOwnProperty.call(value, 'asset')) throw new Error('Invalid animation reference')
+    return value
+}
 const references = new Map()
 function record(ref, name, allowFixedModel = false) {
     const legacy = ref.path === `models/3d/${ref.sha256}.glb`
@@ -21,10 +36,16 @@ function record(ref, name, allowFixedModel = false) {
 }
 for (const [identity, model] of Object.entries(catalogue.models)) {
     record(model, identity, true)
-    for (const animation of model.animations) record(animation, animation.id)
+    for (const value of model.animations) {
+        const animation = animationRef(value)
+        record(animation, animation.id)
+    }
     if (model.additionalActor) {
         record(model.additionalActor.model, undefined)
-        for (const animation of model.additionalActor.model.animations) record(animation, animation.id)
+        for (const value of model.additionalActor.model.animations) {
+            const animation = animationRef(value)
+            record(animation, animation.id)
+        }
     }
 }
 if (!references.size) throw new Error('No model or animation resources to validate')

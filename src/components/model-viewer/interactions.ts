@@ -7,13 +7,22 @@ type EyeState = typeof eyeStates[number] | 'None'
 export type NativeEvent = {frame: number} & (
     {type: 'EyeSet', state: EyeState, enableBlink: boolean}
     | {type: 'Emitter', effect: string}
+    | {type: 'SubObject', meshes: number[], visible: boolean}
 )
+
+/** While a clip owns a mesh, only its Boolean track writes mesh.visible.
+ * Eye callbacks retain expression/timer state; blinking supplies track input. */
+export type NativeVisibility = {
+    owns(index: number): boolean,
+    blink(index: number, visible: boolean): void,
+    reset(): void,
+}
 
 function check(value: unknown, message: string): asserts value {
     if (!value) throw new Error(message)
 }
 
-/** Hidden eye nodes are outside the default glTF scene so generic readers still
+/** Hidden eye and SubObject nodes are outside the default glTF scene so generic readers still
  * show the static appearance. Load them explicitly, sharing the same bones.
  * Attach before material setup and bounds, and before checking cancellation so
  * the caller can release every completed dependency through disposeGLTF.
@@ -22,7 +31,7 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
     const json = model.parser.json
     const profile = json.extras?.atpInteractions
     if (profile === undefined) return undefined
-    check(profile?.version === 1 && Object.keys(profile).every(key => ['version', 'eyes', 'hiddenNodes', 'effects'].includes(key)),
+    check(profile?.version === 1 && Object.keys(profile).every(key => ['version', 'eyes', 'hiddenNodes', 'effects', 'subObjects'].includes(key)),
         'Unsupported model interaction profile')
     const hidden: number[] = profile.hiddenNodes ?? []
     check(Array.isArray(hidden) && new Set(hidden).size === hidden.length
@@ -58,7 +67,11 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
             && new Set(indices).size === indices.length && indices.every(index => meshes.has(index)), 'Invalid eye mesh reference')
     }
     const allEyes = new Set(Object.values(groups ?? {}).flat())
-    check(hidden.every(index => allEyes.has(json.nodes[index].extras.atpNativeMeshIndex)), 'Hidden node is not an eye mesh')
+    const subObjects: number[] = profile.subObjects ?? []
+    check(Array.isArray(subObjects) && new Set(subObjects).size === subObjects.length
+        && subObjects.every(index => Number.isSafeInteger(index) && meshes.has(index)), 'Invalid SubObject mesh reference')
+    const controlled = new Set([...allEyes, ...subObjects])
+    check(hidden.every(index => controlled.has(json.nodes[index].extras.atpNativeMeshIndex)), 'Hidden node has no native controller')
     // An empty Open group is a legal static appearance, not enough evidence to
     // invent blinking. Other expressions may share native subobjects.
     const canBlink = Boolean(groups?.Open?.length && groups?.Closed?.length
@@ -66,18 +79,32 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
         && groups.Open.every(index => defaults.get(meshes.get(index)!))
         && groups.Closed.every(index => !defaults.get(meshes.get(index)!) && !groups.Open!.includes(index)))
     let expression: EyeState = 'Open', enabled = true, open = false, remaining = 0
-    function show(state: EyeState) {
-        for (const index of allEyes) meshes.get(index)!.visible = false
-        if (state !== 'None') for (const index of groups?.[state] ?? []) meshes.get(index)!.visible = true
+    let visibility: NativeVisibility | undefined
+    function show(state: EyeState, blink = false) {
+        for (const index of allEyes) {
+            const visible = state !== 'None' && Boolean(groups?.[state]?.includes(index))
+            if (visibility?.owns(index)) { if (blink) visibility.blink(index, visible) }
+            else meshes.get(index)!.visible = visible
+        }
+    }
+    function resetPlayback() {
+        // Native reset restores the expression, without restarting the blink
+        // timer/phase. Seeks and loops retain that rule but clear track overrides.
+        visibility?.reset()
+        for (const [index, mesh] of meshes) if (!visibility?.owns(index)) mesh.visible = defaults.get(mesh)!
+        expression = 'Open'
+        enabled = true
     }
     return {
         get active() { return canBlink && enabled },
+        useVisibility(owner?: NativeVisibility) { visibility?.reset(); visibility = owner; visibility?.reset() },
         update(delta: number) {
-            if (!canBlink || !enabled) return
-            if (remaining > 0) { remaining = Math.fround(remaining - Math.fround(delta)); return }
-            show(open ? 'Closed' : expression)
+            if (!canBlink || !enabled) return false
+            if (remaining > 0) { remaining = Math.fround(remaining - Math.fround(delta)); return false }
+            show(open ? 'Closed' : expression, true)
             remaining = open ? Math.fround(.1) : 2 + Math.floor(Math.random() * 4)
             open = !open
+            return true
         },
         set(event: Extract<NativeEvent, {type: 'EyeSet'}>) {
             expression = event.state
@@ -85,7 +112,9 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
             show(expression)
             // The native eye setter does not restart the blink phase/timer.
         },
+        resetPlayback,
         reset() {
+            visibility?.reset()
             for (const [mesh, visible] of defaults) mesh.visible = visible
             expression = 'Open'
             enabled = true
@@ -118,13 +147,57 @@ export function nativeEvents(model: GLTF, metadata: any, allow: boolean): Native
             check(Object.keys(event).sort().join(',') === 'enableBlink,frame,state,type'
                 && [...eyeStates, 'None'].includes(event.state) && typeof event.enableBlink === 'boolean'
                 && profile.eyes && (event.state === 'None' || Array.isArray(profile.eyes[event.state])), 'Unsupported eye event')
+        } else if (event.type === 'SubObject') {
+            const actual = new Set<number>()
+            model.scene.traverse(object => {
+                if (object instanceof Mesh) {
+                    const index = model.parser.associations.get(object)?.nodes
+                    actual.add(model.parser.json.nodes?.[index]?.extras?.atpNativeMeshIndex)
+                }
+            })
+            check(Object.keys(event).sort().join(',') === 'frame,meshes,type,visible'
+                && typeof event.visible === 'boolean' && Array.isArray(event.meshes) && event.meshes.length > 0
+                && new Set(event.meshes).size === event.meshes.length
+                && event.meshes.every((index: number) => Number.isSafeInteger(index) && index >= 0
+                    && profile.subObjects?.includes(index) && actual.has(index)), 'Unresolved native SubObject event')
         } else if (event.type === 'Emitter') {
             check(Object.keys(event).sort().join(',') === 'effect,frame,type'
                 && typeof event.effect === 'string' && Object.prototype.hasOwnProperty.call(profile.effects ?? {}, event.effect),
             'Unresolved native emitter event')
         } else throw new Error('Unsupported native animation event')
     }
-    return events.map(event => ({...event}))
+    return events.map(event => event.type === 'SubObject' ? {...event, meshes: [...event.meshes]} : {...event})
+}
+
+
+/** Replay every crossed event in source order. A backward seek or mixer loop
+ * restores defaults before reconstructing the new local time; late emitters
+ * receive their age so seeking cannot leave stale effects or visibility.
+ */
+export function nativeEventPlayback(events: Exclude<NativeEvent, {type: 'SubObject'}>[], fps: number, controller: {
+    reset(): void, apply(event: Exclude<NativeEvent, {type: 'SubObject'}>, age: number): void,
+}) {
+    let cursor = 0, previous = -1, previousCycle = 0
+    function reset() {
+        controller.reset()
+        cursor = 0
+        previous = -1
+        previousCycle = 0
+    }
+    return {
+        reset,
+        update(time: number, cycle = 0) {
+            check(Number.isFinite(time) && time >= 0 && Number.isSafeInteger(cycle) && cycle >= 0,
+                'Invalid native event playback time')
+            if (time < previous || cycle !== previousCycle) reset()
+            previous = time
+            previousCycle = cycle
+            while (cursor < events.length && events[cursor].frame / fps <= time) {
+                const event = events[cursor++]
+                controller.apply(event, Math.max(0, time - event.frame / fps))
+            }
+        },
+    }
 }
 
 /** Test the current skinned pose, never rest-pose bounds or companion meshes. */

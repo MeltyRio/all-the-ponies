@@ -53,7 +53,10 @@ http://127.0.0.1:5195/?identity=Pony_Twilight_Sparkle
 ```
 
 The selected entry must exist in that catalogue. Animation buttons play its
-supported clips once, then restore rest. The lock switches horizontal/free
+supported clips once, then restore rest. Every valid clip in the verified native
+library is considered; actions that need unsupported events remain excluded with
+a producer diagnostic. Object-declared preferred clips stay first and use bold
+text and a light edge in the list. The lock switches horizontal/free
 rotation, and Reset restores the view and pose. Supported additional actors and
 native materials load with the selected resource; they do not need separate demo
 switches. The demo does not add unsupported game events or interactive clothing.
@@ -182,12 +185,22 @@ external buffer/image URIs inside GLBs are rejected. Hosting must allow browser
 GET/CORS and deliver GLB bytes unchanged. CSP/cache/deployment policies remain
 owned by ATP.
 
-The reader accepts catalogue versions 1, 2 and 3. Version 2 is required for an
+The reader accepts catalogue versions 1, 2, 3 and 4. Version 2 is required for an
 additional actor or a native material UV clock; a plain catalogue remains version
-1. Version 3 adds the optional native interaction profile below. Deploy this
-reader before publishing schema-3 data: older clients reject it instead of
+1. Version 3 adds the optional native interaction profile below. Version 4 adds
+per-model animation event bindings alongside reusable skeletal GLBs. Deploy this
+reader before publishing schema-4 data: older clients reject it instead of
 silently omitting required interaction behavior.
 The same upload reference checks include the additional actor's model and clips.
+
+Schema 4 can store shared animation references once in the optional top-level
+`animationAssets` array. Each entry is a complete animation reference, including
+its optional `eventBinding`. A model or additional actor's `animations` list then
+uses integer table indices or legacy inline references. Only identical complete
+references are shared, preserving each model's event targets. The reader expands
+only the selected model and its additional actor, reuses the table objects, and
+applies the same resource, animation ID and rig checks. Compact references require
+schema 4; invalid indices, missing tables and binding wrappers are rejected.
 
 ## Model and animation boundary
 
@@ -205,9 +218,10 @@ structures plus small extras:
 - `atpClip`: native FPS, frame count and duration; optional `nativeSampling`
   version 1 references FLOAT VEC3 positions and VEC4 raw XYZW quaternion
   accessors in frame-major, joint-major order. Optional `eventProfile: "ponybook-v1"`
-  carries ordered native `EyeSet` and supported `Emitter` records.
-- `atpInteractions`: model-side native eye mesh indices, hidden node indices
-  and any embedded finite emitter definitions/textures. Eye nodes outside the
+  carries ordered native records in older standalone exports. Normal schema-4
+  output keeps model-specific events in catalogue animation `eventBinding` entries.
+- `atpInteractions`: model-side native eye and SubObject mesh indices, hidden
+  node indices and any embedded finite emitter definitions/textures. Nodes outside the
   default scene are loaded explicitly with the same skeleton; their declared
   visibility is applied before material setup, camera fitting or first render.
 - `atpNativeDepth`: native material depth test/write flags not represented by
@@ -334,10 +348,9 @@ are described in game-data's `docs/3d-resource-associations.md`.
 
 This is a basic playback consumer. Native source discovery and default/outfit
 selection belong to game-data; a missing catalogue identity yields no button.
-Interactive clothing assembly, SubObject action props, recursive companions,
-general native event execution, task scenes and character-family action sorting are outside the
-viewer. One explicitly declared additional actor is supported as described above.
-Only the versioned parent EyeSet/finite-emitter profile described above executes.
+Interactive clothing assembly, recursive companions, general native event
+execution, task scenes and character-family action sorting are outside the viewer. One explicitly declared additional actor is supported as described above.
+Only the versioned parent EyeSet/SubObject/finite-emitter profile described here executes.
 Unknown events, unresolved event dependencies and eventful independent companions
 are rejected rather than silently rendered without their behavior. In addition to ordinary materials,
 game-data recognizes reviewed native horn and hair shaders by their exact source
@@ -356,3 +369,50 @@ is owned by game-data. No new registry package, independent Luna Kit PR or
 resource hosting system is added. This source is GPL-3.0-only like
 ATP; Luna Kit is GPL-3.0, Three.js is MIT, NumPy is BSD and Pillow is MIT-CMU.
 Third-party code and game assets are not vendored.
+
+
+### Native SubObject visibility and shared clips
+
+The normal producer keeps skeletal animation GLBs reusable across models. A
+schema-4 catalogue animation can carry `eventBinding: {version: 1, events: [...]}` with
+that model's resolved EyeSet, Emitter and SubObject records. SubObject records
+have `{frame, type: "SubObject", meshes: [nativeMeshIndex, ...], visible: boolean}`.
+The model's `extras.atpInteractions.subObjects` lists the permitted mesh indices;
+its node extras identify actual native meshes and their default visibility.
+Hidden event-controlled nodes are retained outside the default glTF scene and
+attached by ATP before binding. Generic glTF readers still show the static pose.
+
+Targets come from the exact native model tag, SubObject ID and mesh name. Missing
+or ambiguous targets exclude the whole affected action; the producer never
+substitutes another model's prop. The reader requires retained mesh nodes for all
+indices and rejects unknown event types or competing catalogue and embedded event
+sources. Older GLBs with embedded `ponybook-v1` events continue to work when no
+catalogue binding is present (schema 3 remains supported). Schema 4 is mandatory
+for catalogue bindings so older readers reject the new contract instead of
+playing event-free skeletal motion. STEP and native transform interpolation are unchanged.
+
+ATP builds runtime-only `BooleanKeyframeTrack`s targeting each resolved mesh
+UUID's `.visible` property. Per-track Float64 times retain exact native frame/fps
+boundaries, and the clip duration uses native frameCount/fps. The tracks begin
+with the model default, folding frame-zero and same-time writes in source order.
+No visibility channels are added to glTF and the catalogue contract is unchanged.
+
+SubObject records leave the callback stream after binding. When a SubObject
+shares an eye mesh, its track also folds EyeSet writes in source order. The eye
+controller keeps expression and blink timing, but only the mixer writes that
+mesh's visibility. A blink supplies a track override until the next visibility
+key; seeks and loops clear it before sampling. The native blink timer/phase is
+retained, as with the previous reset behavior. Untracked eyes and finite emitters
+continue through their existing controllers.
+
+Restart, Reset, animation changes and returning to rest restore default meshes.
+The runtime controller provides `seek(seconds)`, `setLoop(boolean)` and `replay()`;
+button playback remains once by default. Seek reconstructs eyes/effects at the
+requested local time (wrapping in repeat mode), including after completion.
+Actual action-local time and loop cycles drive callback reconstruction. Completion
+restores defaults after mixer evaluation while preserving the finite effect tail.
+Late emitter events initialize at their original event time and advance by their
+elapsed age; already-expired events allocate no particle instance. On-time events
+retain native emission on the first positive update.
+`preferredAnimations` is an optional model-level list of exported animation IDs,
+used only to mark the original native preferred choices in the complete menu.

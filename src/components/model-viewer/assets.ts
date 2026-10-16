@@ -1,4 +1,5 @@
 import { createAssetUrl } from '../../scripts/assets'
+import type { NativeEvent } from './interactions'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
 export interface AssetRef {
@@ -12,6 +13,7 @@ export interface AnimationRef extends AssetRef {
     id: string
     name: string
     duration: number
+    eventBinding?: {version: 1, events: NativeEvent[]}
 }
 
 export interface ActorRef extends AssetRef {
@@ -26,6 +28,7 @@ export interface AdditionalActorRef {
 }
 
 export interface ModelRef extends ActorRef {
+    preferredAnimations?: string[]
     additionalActor?: AdditionalActorRef
     interactions?: {version: 1, clickAnimations: string[], dizzyAnimation?: string}
 }
@@ -63,6 +66,11 @@ function checkActor(model: ActorRef, playable = false, identity?: string) {
         check(typeof animation.name === 'string' && animation.name.length > 0, 'Invalid animation name')
         check(Number.isFinite(animation.duration) && (playable ? animation.duration > 0 : animation.duration >= 0), 'Invalid animation duration')
         check(animation.rigKey === model.rigKey, 'Animation rig is incompatible')
+        if (Object.prototype.hasOwnProperty.call(animation, 'eventBinding')) {
+            const binding = animation.eventBinding
+            check(binding?.version === 1 && Object.keys(binding).sort().join(',') === 'events,version'
+                && Array.isArray(binding.events), 'Unsupported animation event binding')
+        }
         ids.add(animation.id)
     }
 }
@@ -111,25 +119,54 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
     const catalogue = await fetchJson(cataloguePath, signal, version) as {
         schemaVersion: number
         models: Record<string, ModelRef>
+        animationAssets?: AnimationRef[]
     }
-    check([1, 2, 3].includes(catalogue?.schemaVersion) && catalogue.models && typeof catalogue.models === 'object'
+    check([1, 2, 3, 4].includes(catalogue?.schemaVersion) && catalogue.models && typeof catalogue.models === 'object'
         && !Array.isArray(catalogue.models), 'Unsupported 3D catalogue')
+    const table = catalogue.animationAssets
+    if (Object.prototype.hasOwnProperty.call(catalogue, 'animationAssets')) {
+        check(catalogue.schemaVersion === 4, 'Compact animation assets require catalogue version 4')
+        check(Array.isArray(table), 'Invalid animation asset table')
+        check(table.every(asset => asset && typeof asset === 'object' && !Array.isArray(asset)), 'Invalid animation asset table entry')
+    }
+    function assetAt(index: unknown): AnimationRef {
+        check(catalogue.schemaVersion === 4 && table && Number.isSafeInteger(index)
+            && (index as number) >= 0 && (index as number) < table.length, 'Invalid compact animation asset reference')
+        return table[index as number]
+    }
+    function expandAnimations(actor: ActorRef) {
+        check(actor && Array.isArray(actor.animations), 'Invalid animation list')
+        actor.animations = (actor.animations as unknown[]).map(item => {
+            if (typeof item === 'number') return assetAt(item)
+            check(item && typeof item === 'object' && !Array.isArray(item), 'Invalid animation reference')
+            check(!Object.prototype.hasOwnProperty.call(item, 'asset'), 'Invalid compact animation reference')
+            return item as AnimationRef
+        })
+    }
     if (!Object.prototype.hasOwnProperty.call(catalogue.models, identity)) return null
     const model = catalogue.models[identity]
+    expandAnimations(model)
     checkActor(model, false, identity)
     if (Object.prototype.hasOwnProperty.call(model, 'additionalActor')) {
         check(catalogue.schemaVersion >= 2, 'Additional actors require catalogue version 2 or later')
+        expandAnimations(model.additionalActor?.model)
         checkAdditionalActor(model.additionalActor!)
     }
     if (Object.prototype.hasOwnProperty.call(model, 'interactions')) {
         const value = model.interactions
-        check(catalogue.schemaVersion === 3 && value?.version === 1
+        check([3, 4].includes(catalogue.schemaVersion) && value?.version === 1
             && Object.keys(value).every(key => ['version', 'clickAnimations', 'dizzyAnimation'].includes(key)), 'Unsupported interaction controller')
         const ids = new Set(model.animations.map(animation => animation.id))
         check(Array.isArray(value.clickAnimations) && new Set(value.clickAnimations).size === value.clickAnimations.length
             && value.clickAnimations.every(id => ids.has(id)), 'Invalid click animation reference')
         check(value.dizzyAnimation === undefined || ids.has(value.dizzyAnimation), 'Invalid dizzy animation reference')
     }
+    const ids = new Set(model.animations.map(animation => animation.id))
+    if (model.preferredAnimations !== undefined) check(Array.isArray(model.preferredAnimations)
+        && new Set(model.preferredAnimations).size === model.preferredAnimations.length
+        && model.preferredAnimations.every(id => ids.has(id)), 'Invalid preferred animation reference')
+    if (model.animations.some(animation => animation.eventBinding !== undefined))
+        check(catalogue.schemaVersion === 4 && model.interactions !== undefined, 'Animation event bindings require the native controller and catalogue version 4')
     return model
 }
 

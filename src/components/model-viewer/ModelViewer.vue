@@ -57,6 +57,7 @@ onBeforeUnmount(() => {
                     v-for="animation in props.model.animations"
                     :key="animation.id"
                     :disabled="!state.ready"
+                    :class="{preferred: props.model.preferredAnimations?.includes(animation.id)}"
                     :aria-pressed="state.activeAnimation === animation.id"
                     @click="controller?.play(animation)"
                 >{{ animation.name }}</button>
@@ -137,6 +138,10 @@ onBeforeUnmount(() => {
     text-shadow: var(--text-shadow);
     overflow-wrap: anywhere;
     cursor: pointer;
+}
+.model-animations button.preferred {
+    font-weight: 700;
+    box-shadow: inset .2rem 0 rgba(255, 255, 255, .65);
 }
 .model-animations button:hover,
 .model-animations button:focus-visible,

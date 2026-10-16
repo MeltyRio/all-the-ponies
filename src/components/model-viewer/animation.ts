@@ -1,10 +1,10 @@
-import { AnimationClip, Interpolant, Object3D, Quaternion, Vector3 } from 'three';
+import { AnimationClip, BooleanKeyframeTrack, Interpolant, Mesh, Object3D, Quaternion, Vector3 } from 'three';
 import type { TypedArray } from 'three';
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js';
 import type { AnimationRef } from './assets';
-import { nativeEvents, type NativeEvent } from './interactions';
+import { nativeEvents, type NativeEvent, type NativeVisibility } from './interactions';
 
-export type BoundAnimation = AnimationClip & {nativeEvents: NativeEvent[], nativeFPS: number}
+export type BoundAnimation = AnimationClip & {nativeEvents: Exclude<NativeEvent, {type: 'SubObject'}>[], nativeFPS: number, nativeVisibility: NativeVisibility}
 
 type Rig = {
     version: 1,
@@ -136,6 +136,66 @@ class NativeInterpolant extends Interpolant {
     interpolate_(_index: number, _start: number, time: number, _end: number) { return this.evaluate(time) }
 }
 
+/** Native frame/fps boundaries must not be rounded to Float32 (e.g. 1/15).
+ * These tracks are runtime-only; glTF keeps its standard skeletal channels. */
+class VisibilityTrack extends BooleanKeyframeTrack {}
+Object.assign(VisibilityTrack.prototype, {TimeBufferType: Float64Array})
+
+function visibilityTracks(model: GLTF, events: NativeEvent[], fps: number) {
+    const targets = new Set(events.flatMap(event => event.type === 'SubObject' ? event.meshes : []))
+    const groups = model.parser.json.extras?.atpInteractions?.eyes ?? {}
+    const eyeMeshes = new Set<number>(Object.values(groups).flat() as number[])
+    const states = new Map<number, {track: VisibilityTrack, key: number, blink?: {key: number, visible: boolean}}>()
+    model.scene.traverse(mesh => {
+        if (!(mesh instanceof Mesh)) return
+        const node = model.parser.json.nodes[model.parser.associations.get(mesh)?.nodes]
+        const index = node?.extras?.atpNativeMeshIndex
+        if (!targets.has(index)) return
+        check(!states.has(index) && typeof node.extras.atpDefaultVisible === 'boolean', 'Invalid visibility track target')
+        const times = [0], values = [node.extras.atpDefaultVisible]
+        for (const event of events) {
+            let visible: boolean
+            if (event.type === 'SubObject' && event.meshes.includes(index)) visible = event.visible
+            else if (event.type === 'EyeSet' && eyeMeshes.has(index)) visible = event.state !== 'None' && groups[event.state].includes(index)
+            else continue
+            const time = event.frame / fps
+            // Folding only equal timestamps keeps native source order, including
+            // repeated values: a later key must still supersede an earlier blink.
+            if (times[times.length - 1] === time) values[values.length - 1] = visible
+            else { times.push(time); values.push(visible) }
+        }
+        const track = new VisibilityTrack(`${mesh.uuid}.visible`, times, values)
+        const state: {track: VisibilityTrack, key: number, blink?: {key: number, visible: boolean}} = {track, key: 0}
+        states.set(index, state)
+        const create = track.InterpolantFactoryMethodDiscrete.bind(track)
+        Object.assign(track, {createInterpolant(result?: Parameters<typeof create>[0]) {
+            const interpolant = create(result)
+            const evaluate = interpolant.evaluate.bind(interpolant)
+            interpolant.evaluate = (time: number) => {
+                const value = evaluate(time)
+                let low = 0, high = track.times.length
+                while (low + 1 < high) {
+                    const middle = (low + high) >>> 1
+                    if (track.times[middle] <= time) low = middle
+                    else high = middle
+                }
+                state.key = low
+                if (state.blink?.key !== low) state.blink = undefined
+                value[0] = state.blink ? state.blink.visible : track.values[low]
+                return value
+            }
+            return interpolant
+        }})
+    })
+    check(states.size === targets.size, 'Unresolved visibility track target')
+    const controller: NativeVisibility = {
+        owns(index) { return states.has(index) },
+        blink(index, visible) { const state = states.get(index); if (state) state.blink = {key: state.key, visible} },
+        reset() { for (const state of states.values()) state.blink = undefined },
+    }
+    return {tracks: [...states.values()].map(state => state.track), controller}
+}
+
 /** Bind by verified node indices, never bone names or bone count alone. */
 export async function bindAnimation(model: GLTF, animation: GLTF, ref: AnimationRef, allowNativeEvents = false): Promise<BoundAnimation> {
     const targetRig = rigMetadata(model)
@@ -148,7 +208,14 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
     const metadata = json.extras?.atpClip
     check(Number.isInteger(metadata?.frameCount) && metadata.frameCount > 0
         && Number.isFinite(metadata.fps) && metadata.fps > 0, 'Invalid animation metadata')
-    const events = nativeEvents(model, metadata, allowNativeEvents)
+    const binding = ref.eventBinding
+    if (binding !== undefined) {
+        check(binding?.version === 1 && Object.keys(binding).sort().join(',') === 'events,version'
+            && Array.isArray(binding.events), 'Unsupported animation event binding')
+        check(metadata.events === undefined && metadata.eventProfile === undefined, 'Competing animation event sources')
+    }
+    const events = nativeEvents(model, binding === undefined ? metadata
+        : {...metadata, eventProfile: 'ponybook-v1', events: binding.events}, allowNativeEvents)
     check(Math.abs(metadata.frameCount / metadata.fps - ref.duration) < 1e-4
         && Math.abs(metadata.duration - ref.duration) < 1e-4, 'Native animation timing mismatch')
     const source = animation.animations[0]
@@ -208,5 +275,9 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
         }
     }
     check(Math.abs(source.duration - ref.duration) < 1e-4, 'Animation duration mismatch')
-    return Object.assign(new AnimationClip(ref.name, source.duration, tracks), {nativeEvents: events, nativeFPS: metadata.fps})
+    const visibility = visibilityTracks(model, events, metadata.fps)
+    tracks.push(...visibility.tracks)
+    return Object.assign(new AnimationClip(ref.name, metadata.frameCount / metadata.fps, tracks), {
+        nativeEvents: events.filter(event => event.type !== 'SubObject'), nativeFPS: metadata.fps, nativeVisibility: visibility.controller,
+    })
 }

@@ -63,41 +63,50 @@ export function createEmitterSimulation(definition: NativeEmitterProfile, random
         return row
     }
     function reset() { active = false; emitted = false; particles = [] }
+    function emit() {
+        const total = p.portions[1]! + p.portions[2]!
+        for (let index = 0; index < p.count; index++) {
+            // Native burst consumes slot zero, then remaining slots backwards.
+            const ordinal = index ? p.count - index : 0
+            const targets = [0, 1, 2].map(i => sample(i, ordinal))
+            particles.push({age: 0, segment: 0, segmentAge: 0,
+                targets, durations: p.portions.slice(1).map(n => p.lifetime * n / total),
+                deltas: targets.slice(1).map((row, i) => row.map((n, j) => (n - targets[i]![j]!) * (j < 3 ? p.speed : 1))),
+                value: targets[0]!.slice()})
+        }
+        emitted = true
+    }
+    function update(delta: number) {
+        if (!Number.isFinite(delta) || delta < 0) throw new Error('Invalid native emitter delta')
+        if (!active) return
+        const step = delta * p.timeWarp
+        for (const particle of particles) {
+            particle.age += step
+            let remaining = step
+            while (remaining > 1e-10 && particle.segment < 2) {
+                const duration = particle.durations[particle.segment]!
+                const take = Math.min(remaining, duration - particle.segmentAge)
+                const change = particle.deltas[particle.segment]!
+                for (let i = 0; i < 10; i++) particle.value[i]! += change[i]! * take / duration
+                particle.segmentAge += take
+                remaining -= take
+                if (particle.segmentAge >= duration - 1e-10) { particle.segment++; particle.segmentAge = 0 }
+            }
+        }
+        particles = particles.filter(row => row.age < p.lifetime - 1e-10)
+        if (!emitted && delta > 0) emit()
+        if (emitted && !particles.length) active = false
+    }
     return {
-        trigger() { reset(); active = true },
-        update(delta: number) {
-            if (!Number.isFinite(delta) || delta < 0) throw new Error('Invalid native emitter delta')
-            if (!active) return
-            const step = delta * p.timeWarp
-            for (const particle of particles) {
-                particle.age += step
-                let remaining = step
-                while (remaining > 1e-10 && particle.segment < 2) {
-                    const duration = particle.durations[particle.segment]!
-                    const take = Math.min(remaining, duration - particle.segmentAge)
-                    const change = particle.deltas[particle.segment]!
-                    for (let i = 0; i < 10; i++) particle.value[i]! += change[i]! * take / duration
-                    particle.segmentAge += take
-                    remaining -= take
-                    if (particle.segmentAge >= duration - 1e-10) { particle.segment++; particle.segmentAge = 0 }
-                }
-            }
-            particles = particles.filter(row => row.age < p.lifetime - 1e-10)
-            if (!emitted && delta > 0) {
-                const total = p.portions[1]! + p.portions[2]!
-                for (let index = 0; index < p.count; index++) {
-                    // Native burst consumes slot zero, then remaining slots backwards.
-                    const ordinal = index ? p.count - index : 0
-                    const targets = [0, 1, 2].map(i => sample(i, ordinal))
-                    particles.push({age: 0, segment: 0, segmentAge: 0,
-                        targets, durations: p.portions.slice(1).map(n => p.lifetime * n / total),
-                        deltas: targets.slice(1).map((row, i) => row.map((n, j) => (n - targets[i]![j]!) * (j < 3 ? p.speed : 1))),
-                        value: targets[0]!.slice()})
-                }
-                emitted = true
-            }
-            if (emitted && !particles.length) active = false
+        trigger(elapsed = 0) {
+            if (!Number.isFinite(elapsed) || elapsed < 0) throw new Error('Invalid native emitter catch-up')
+            reset(); active = true
+            // On-time native bursts still emit on their first positive tick.
+            // A late event starts at its event time, then advances by its real
+            // elapsed age; no invented tick or epsilon is added to the clock.
+            if (elapsed > 0) { emit(); update(elapsed) }
         },
+        update,
         reset,
         get active() { return active },
         snapshot() { return {active, emitted, particles} },
@@ -199,7 +208,10 @@ export async function createNativeEmitters(gltf: GLTF, scene: THREE.Scene, camer
             if (disposed) throw new Error('Native emitter disposed')
             const definition = definitions[name]
             if (!definition || !textures.has(name)) throw new Error('Missing native emitter event dependency')
-            const group = new THREE.Group(), simulation = createEmitterSimulation(definition)
+            const simulation = createEmitterSimulation(definition)
+            simulation.trigger(elapsed)
+            if (!simulation.active) return
+            const group = new THREE.Group()
             group.name = 'native-emitter:' + name
             const meshes = Array.from({length: definition.particle.count}, () => {
                 const mesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), new THREE.MeshBasicMaterial({
@@ -208,7 +220,7 @@ export async function createNativeEmitters(gltf: GLTF, scene: THREE.Scene, camer
                 }))
                 mesh.visible = false; mesh.renderOrder = 101; group.add(mesh); return mesh
             })
-            scene.add(group); simulation.trigger(); simulation.update(elapsed); instances.push({name, simulation, group, meshes})
+            scene.add(group); instances.push({name, simulation, group, meshes})
         },
         update(delta: number) {
             if (disposed) return

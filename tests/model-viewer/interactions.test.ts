@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { BoxGeometry, Group, Mesh, MeshBasicMaterial } from 'three'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
-import { nativeGestures, prepareNativeEyes } from '../../src/components/model-viewer/interactions'
+import { nativeEvents, nativeEventPlayback, nativeGestures, prepareNativeEyes } from '../../src/components/model-viewer/interactions'
 import { disposeGLTF } from '../../src/components/model-viewer/assets'
 
 function fixture() {
@@ -86,4 +86,64 @@ test('drag-return, cancellation, two fingers and modifier buttons cannot become 
     gestures.down(pointer(0), true)
     gestures.clear()
     assert.equal(gestures.up(pointer(0), 360, 1, true), undefined)
+})
+
+
+test('hidden SubObject nodes are supported without an eye controller', async () => {
+    const f = fixture()
+    delete f.json.extras.atpInteractions.eyes
+    f.json.extras.atpInteractions.subObjects = [12, 13]
+    const controller = (await prepareNativeEyes(f.model, new AbortController().signal))!
+    assert.equal(controller.active, false)
+    assert.equal(f.model.scene.children.length, 4)
+    assert.deepEqual(controller.snapshot().visible, [10, 11])
+    disposeGLTF(f.model)
+})
+
+test('event playback delivers crossed emitters once and reconstructs after seek or loop', () => {
+    const calls: unknown[] = []
+    const player = nativeEventPlayback([
+        {frame: 0, type: 'Emitter', effect: 'stars'},
+        {frame: 2, type: 'EyeSet', state: 'Closed', enableBlink: false},
+    ], 2, {reset: () => calls.push('reset'), apply: (event, age) => calls.push([event.type, age])})
+    player.update(0)
+    player.update(.25)
+    player.update(1.5)
+    assert.deepEqual(calls, [['Emitter', 0], ['EyeSet', .5]])
+    calls.length = 0
+    player.update(.5)
+    assert.deepEqual(calls, ['reset', ['Emitter', .5]])
+    calls.length = 0
+    player.update(.5, 1)
+    assert.deepEqual(calls, ['reset', ['Emitter', .5]])
+})
+
+test('SubObject rejects invalid indices, unresolved actual nodes and unsupported event fields', async () => {
+    const f = fixture()
+    f.json.extras.atpInteractions.subObjects = [10]
+    await prepareNativeEyes(f.model, new AbortController().signal)
+    for (const event of [
+        {frame: 0, type: 'SubObject', meshes: [999], visible: true},
+        {frame: 0, type: 'SubObject', meshes: [10, 10], visible: true},
+        {frame: 0, type: 'SubObject', meshes: [], visible: true},
+        {frame: 0, type: 'SubObject', meshes: [10], visible: 1},
+        {frame: 0, type: 'SubObject', meshes: [10], visible: true, extra: 1},
+    ]) assert.throws(() => nativeEvents(f.model, {frameCount: 4, eventProfile: 'ponybook-v1', events: [event]}, true))
+    f.model.scene.remove(f.meshes[0])
+    assert.throws(() => nativeEvents(f.model, {frameCount: 4, eventProfile: 'ponybook-v1', events: [
+        {frame: 0, type: 'SubObject', meshes: [10], visible: true},
+    ]}, true), /SubObject/)
+    f.model.scene.add(f.meshes[0])
+    disposeGLTF(f.model)
+})
+
+
+test('exact native frame seeks do not lose an event through floating point floor', () => {
+    const applied: unknown[] = []
+    const player = nativeEventPlayback([{frame: 123, type: 'EyeSet', state: 'Closed', enableBlink: false}], 30,
+        {reset() {}, apply: event => applied.push(event)})
+    player.update(122.999 / 30)
+    assert.equal(applied.length, 0)
+    player.update(123 / 30)
+    assert.equal(applied.length, 1)
 })

@@ -106,3 +106,73 @@ test('catalogue v3 explicitly enables only exported native click and dizzy ident
         await assert.rejects(resolveModel('Pony_Test', signal()), /Unsupported interaction controller/)
     }
 })
+
+
+test('catalogue event bindings and preferred clips require valid explicit references', async () => {
+    const interactions = {version: 1, clickAnimations: []}
+    const animation = {...model.animations[0], eventBinding: {version: 1, events: [
+        {frame: 0, type: 'SubObject', meshes: [2], visible: true},
+    ]}}
+    const selected = {...model, animations: [animation], interactions, preferredAnimations: ['move']}
+    const catalogue: any = {schemaVersion: 4, models: {Pony_Test: selected}}
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), selected)
+    catalogue.schemaVersion = 3
+    await assert.rejects(resolveModel('Pony_Test', signal()), /version 4/)
+    catalogue.schemaVersion = 4
+    catalogue.models.Pony_Test = {...selected, preferredAnimations: ['absent']}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /preferred animation/)
+    catalogue.models.Pony_Test = {...selected, preferredAnimations: ['move', 'move']}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /preferred animation/)
+    catalogue.models.Pony_Test = {...selected, animations: [{...animation, eventBinding: {version: 2, events: []}}]}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /event binding/)
+    catalogue.models.Pony_Test = {...selected}
+    delete catalogue.models.Pony_Test.interactions
+    await assert.rejects(resolveModel('Pony_Test', signal()), /require the native controller/)
+})
+
+
+test('schema 4 expands compact refs with bindings and shares table objects with additional actors', async () => {
+    const base = model.animations[0]
+    const other = {...base, id: 'other', name: 'Other'}
+    const binding = {version: 1, events: [{frame: 0, type: 'SubObject', meshes: [2], visible: true}]}
+    const catalogue = {schemaVersion: 4, animationAssets: [base, {...other, eventBinding: binding}], models: {Pony_Test: {
+        ...model, interactions: {version: 1, clickAnimations: ['other']},
+        animations: [0, 1], preferredAnimations: ['move'],
+        additionalActor: {model: {...ref, animations: [0]}, parentRoot: 0,
+            controller: 'native-first-then-random-v1', transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]},
+    }}}
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+    const result = (await resolveModel('Pony_Test', signal()))!
+    assert.deepEqual(result.animations, [base, {...other, eventBinding: binding}])
+    assert.equal(result.animations[0], result.additionalActor!.model.animations[0])
+    assert.deepEqual(result.animations[1].eventBinding, binding)
+    assert.equal(result.additionalActor!.model.animations[0].eventBinding, undefined)
+    assert.deepEqual(result.additionalActor!.model.animations, [base])
+})
+
+test('compact animation references reject old schemas, invalid indices and ambiguous binding wrappers', async () => {
+    let catalogue: any
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+    for (const schemaVersion of [1, 2, 3]) {
+        catalogue = {schemaVersion, animationAssets: [model.animations[0]], models: {Pony_Test: {...model, animations: [0]}}}
+        await assert.rejects(resolveModel('Pony_Test', signal()), /catalogue version 4/)
+    }
+    for (const item of [-1, 1, .5, null, {asset: 0}, {asset: 0, eventBinding: {version: 1, events: []}},
+        {asset: '0', eventBinding: {version: 1, events: []}},
+        {asset: 0, eventBinding: {version: 1, events: []}, path: 'override'}]) {
+        catalogue = {schemaVersion: 4, animationAssets: [model.animations[0]], models: {Pony_Test: {...model, animations: [item]}}}
+        await assert.rejects(resolveModel('Pony_Test', signal()))
+    }
+    catalogue = {schemaVersion: 4, models: {Pony_Test: {...model, animations: [0]}}}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /animation asset/)
+    catalogue = {schemaVersion: 4, animationAssets: [{...model.animations[0], eventBinding: {version: 2, events: []}}],
+        models: {Pony_Test: {...model, animations: [0]}}}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /event binding/)
+    catalogue = {schemaVersion: 4, animationAssets: [{...model.animations[0], rigKey: 'c'.repeat(64)}],
+        models: {Pony_Test: {...model, animations: [0]}}}
+    await assert.rejects(resolveModel('Pony_Test', signal()), /rig is incompatible/)
+})

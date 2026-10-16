@@ -5,7 +5,7 @@ import { bindAnimation, jointObjects, rigMetadata, type BoundAnimation } from '.
 import { disposeGLTF, loadGLB, type AnimationRef, type ModelRef } from './assets';
 import { loadAdditionalActor, type AdditionalActor } from './additional';
 import { applyNativeDepth, nativeUVClock } from './native-materials';
-import { hitsModel, nativeGestures, prepareNativeEyes } from './interactions';
+import { hitsModel, nativeEventPlayback, nativeGestures, prepareNativeEyes } from './interactions';
 import { createNativeEmitters } from './emitter';
 
 export type ViewerState = {
@@ -71,8 +71,10 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     const modelAbort = new AbortController()
     let animationAbort: AbortController | undefined
     const clips = new Map<string, BoundAnimation>()
-    let activeClip: BoundAnimation | undefined
-    let elapsed = 0, eventCursor = 0
+    let action: THREE.AnimationAction | undefined
+    let selected: AnimationRef | undefined
+    let loop = false, cycle = 0
+    let eventPlayback: ReturnType<typeof nativeEventPlayback> | undefined
     const gestures = nativeGestures()
     const notify = () => changed({...state})
     const render = () => { if (!disposed && model) { effects?.render(); renderer.render(scene, camera) } }
@@ -98,9 +100,11 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         animationAbort = undefined
         cancelFrame()
         mixer?.stopAllAction()
+        eyes?.useVisibility()
+        action = undefined
         restore()
-        activeClip = undefined
-        elapsed = eventCursor = 0
+        cycle = 0
+        eventPlayback = undefined
         if (!keepEffects) effects?.reset()
         state.playing = false
         state.loading = !state.ready
@@ -108,15 +112,9 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         finished = false
         resume()
     }
-    function applyEvents() {
-        if (!activeClip) return
-        const events = activeClip.nativeEvents
-        // Walk every crossed event, including frame zero and same-frame order.
-        while (eventCursor < events.length && events[eventCursor].frame <= Math.floor(elapsed * activeClip.nativeFPS)) {
-            const event = events[eventCursor++]
-            if (event.type === 'EyeSet') eyes!.set(event)
-            else effects!.trigger(event.effect, Math.max(0, elapsed - event.frame / activeClip.nativeFPS))
-        }
+    function applyEvents() { if (action) eventPlayback?.update(action.time, cycle) }
+    function complete() {
+        if (finished) { stop(true); notify() }
     }
     const ticking = () => state.playing || additional?.running() || materialClock?.active || eyes?.active || effects?.active
     function frame(time: number) {
@@ -126,19 +124,15 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         lastTime = time
         effects?.update(delta)
         if (state.playing) {
-            elapsed += delta
             mixer!.update(delta)
             applyEvents()
         }
         // Restore after mixer.update has applied its bindings, not from inside
         // the mixer's finished event, where it is still updating this frame.
-        if (finished) {
-            stop(true)
-            notify()
-        }
+        complete()
         additional?.update(delta)
         materialClock?.update(delta)
-        eyes?.update(delta)
+        if (eyes?.update(delta) && state.playing) mixer!.update(0)
         render()
         resume()
     }
@@ -233,6 +227,51 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     canvas.addEventListener('pointercancel', pointerup)
     document.addEventListener('visibilitychange', visibility)
     const onFinished = () => { finished = true }
+    const onLoop = (event: {loopDelta: number}) => {
+        cycle += event.loopDelta
+        // Three dispatches loop before evaluating tracks. Clear blink overrides
+        // here, so the new cycle cannot inherit the preceding cycle's eye pose.
+        eventPlayback?.reset()
+    }
+    function start(clip: BoundAnimation, animation: AnimationRef) {
+        selected = animation
+        state.loading = false
+        state.playing = true
+        state.activeAnimation = animation.id
+        eyes?.useVisibility(clip.nativeVisibility)
+        eventPlayback = nativeEventPlayback(clip.nativeEvents, clip.nativeFPS, {
+            reset() { eyes?.resetPlayback(); effects?.reset() },
+            apply(event, age) {
+                if (event.type === 'Emitter') effects!.trigger(event.effect, age)
+                else if (event.type === 'EyeSet') eyes!.set(event)
+            },
+        })
+        action = mixer!.clipAction(clip).reset().setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1).play()
+    }
+    function seek(time: number) {
+        if (!Number.isFinite(time) || time < 0) throw new Error('Invalid animation seek time')
+        if (disposed || state.loading || !selected) return
+        const clip = clips.get(selected.id)
+        if (!clip) return
+        if (!state.playing) start(clip, selected)
+        eventPlayback!.reset()
+        finished = false
+        cycle = loop ? Math.floor(time / clip.duration) : 0
+        action!.reset().setLoop(loop ? THREE.LoopRepeat : THREE.LoopOnce, loop ? Infinity : 1).play()
+        action!.time = loop ? time % clip.duration : Math.min(time, clip.duration)
+        mixer!.update(0)
+        applyEvents()
+        additional?.place()
+        if (!loop && time >= clip.duration) finished = true
+        complete()
+        lastTime = undefined
+        notify(); render(); resume()
+    }
+    function setLoop(enabled: boolean) {
+        loop = enabled
+        if (action) seek(action.time)
+    }
+    async function replay() { if (selected) await play(selected) }
 
     async function play(animation: AnimationRef) {
         if (!model || disposed) return
@@ -245,22 +284,18 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         notify()
         try {
             if (!ref.animations.includes(animation)) throw new Error('Animation is not in this model catalogue')
-            let clip = clips.get(animation.sha256)
+            let clip = clips.get(animation.id)
             if (!clip) {
                 const source = await loadGLB(animation, abort.signal)
                 try { clip = await bindAnimation(model, source, animation, true) }
                 finally { disposeGLTF(source) }
                 if (disposed || abort.signal.aborted || token !== generation) return
-                clips.set(animation.sha256, clip)
+                clips.set(animation.id, clip)
             }
             if (disposed || abort.signal.aborted || token !== generation) return
             if (Math.abs(clip.duration - animation.duration) > 1e-4) throw new Error('Animation duration mismatch')
             animationAbort = undefined
-            state.loading = false
-            state.playing = true
-            state.activeAnimation = animation.id
-            activeClip = clip
-            mixer!.clipAction(clip).reset().setLoop(THREE.LoopOnce, 1).play()
+            start(clip, animation)
             mixer!.update(0)
             applyEvents()
             additional?.place()
@@ -296,6 +331,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         canvas.removeEventListener('pointercancel', pointerup)
         document.removeEventListener('visibilitychange', visibility)
         mixer?.removeEventListener('finished', onFinished)
+        mixer?.removeEventListener('loop', onLoop)
         if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
         materialClock = undefined
         clips.clear()
@@ -306,7 +342,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     }
     function snapshot() {
         return {
-            ...state, disposed, cachedAnimations: clips.size,
+            ...state, disposed, cachedAnimations: clips.size, time: action?.time ?? 0, loop, cycle,
             ...(additional ? { additional: additional.snapshot() } : {}),
             ...(materialClock?.active ? { nativeMaterial: materialClock.snapshot() } : {}),
             ...(eyes ? {eyes: eyes.snapshot()} : {}),
@@ -344,6 +380,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             }))
             mixer = new THREE.AnimationMixer(model.scene)
             mixer.addEventListener('finished', onFinished)
+            mixer.addEventListener('loop', onLoop)
             if (ref.additionalActor) {
                 additional = await loadAdditionalActor(ref.additionalActor, model, modelAbort.signal,
                     () => { if (state.ready) { resume(); render() } },
@@ -385,6 +422,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             eyes = undefined
             materialClock = undefined
             mixer?.removeEventListener('finished', onFinished)
+            mixer?.removeEventListener('loop', onLoop)
             if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
             if (disposed || modelAbort.signal.aborted) return
             state.loading = false
@@ -394,5 +432,5 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             if (preparing) disposeGLTF(preparing)
         }
     })()
-    return {ready, play, reset, setFree, dispose, snapshot}
+    return {ready, play, seek, setLoop, replay, reset, setFree, dispose, snapshot}
 }
