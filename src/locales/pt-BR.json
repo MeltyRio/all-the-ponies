@@ -471,23 +471,23 @@
     "description": "Cheque se seus dados da nuvem foram corrompidos",
     "messages": {
       "explanation": {
-        "first": "",
-        "fourth": "",
-        "second": "",
-        "third": ""
+        "first": "Você deve ter percebido que depois da atualização, alguns de vocês não conseguiram ver seus salvamentos em All The Ponies, que é o mesmo erro que está causando o problema em não conseguir visitar amigos por conta de \"não ter internet\".",
+        "fourth": "Você pode verificar se você é afetado aqui.",
+        "second": "Depois de algumas investigações, dataminers encontraram de onde o erro está vindo, e não é bom.",
+        "third": "Esse erro na verdade é resultado do seu servidor na nuvem sendo corrompido. Eu não tenho certeza do poque isso acontece, mas é algo realmente assustador."
       },
       "status": {
-        "affected": "",
-        "safe": ""
+        "affected": "Infelizmente parece que você foi afetado",
+        "safe": "Parece que seus arquivos estão a salvo por enquanto"
       },
       "what_can_you_do": {
-        "body": "",
-        "customer_support": "",
-        "title": ""
+        "body": "É simples, contate {support}. Nos devemos dizer, faça isso por sua conta em risco. Se você mandar um email sobre isso e mencionar que isso foi encontrado por meio de data miners, nos não sabemos como a Gameloft vai se sentir ou o que eles podem fazer com sua conta, vendo que você saber essa informação pode ser contra as regras deles. Você pode também compartilhar a palavra para que tenha o maior numero possível de pessoas contatando o suporte, o que deve alertar os devs para arrumarem o problema.",
+        "customer_support": "Atendimento ao cliente",
+        "title": "O que você pode fazer?"
       },
       "what_this_means": {
         "body": {
-          "affected": "",
+          "affected": "Seu server local está bem, mas se você desinstalar o jogo, ou precisar transferir, seu servidor na nuvem não está.",
           "safe": ""
         },
         "title": ""
