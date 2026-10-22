@@ -30,7 +30,20 @@
     "unlock_rotation": "Unlock rotation",
     "lock_rotation": "Lock rotation",
     "animations": "Animations",
-    "failed": "Could not load 3D model."
+    "wardrobe": "Wardrobe",
+    "back_to_outfits": "Back to outfits",
+    "choose_outfit": "Choose an outfit",
+    "slot_body": "Body",
+    "slot_mane": "Head",
+    "slot_tail": "Tail",
+    "outfit_parts": "Outfit parts",
+    "current_appearance": "Currently wearing",
+    "select_all": "Select All",
+    "add_export": "Add {name} to download",
+    "remove_export": "Remove {name} from download",
+    "choose_export": "Choose animations to export",
+    "preparing_download": "Preparing download…",
+    "export_progress": "Preparing animations {completed}/{total}…"
   },
   "button": {
     "cancel": "Cancel",

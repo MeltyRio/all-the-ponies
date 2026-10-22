@@ -118,22 +118,12 @@ test('event playback delivers crossed emitters once and reconstructs after seek 
     assert.deepEqual(calls, ['reset', ['Emitter', .5]])
 })
 
-test('SubObject rejects invalid indices, unresolved actual nodes and unsupported event fields', async () => {
+test('the callback stream rejects legacy SubObject records', async () => {
     const f = fixture()
-    f.json.extras.atpInteractions.subObjects = [10]
     await prepareNativeEyes(f.model, new AbortController().signal)
-    for (const event of [
-        {frame: 0, type: 'SubObject', meshes: [999], visible: true},
-        {frame: 0, type: 'SubObject', meshes: [10, 10], visible: true},
-        {frame: 0, type: 'SubObject', meshes: [], visible: true},
-        {frame: 0, type: 'SubObject', meshes: [10], visible: 1},
-        {frame: 0, type: 'SubObject', meshes: [10], visible: true, extra: 1},
-    ]) assert.throws(() => nativeEvents(f.model, {frameCount: 4, eventProfile: 'ponybook-v1', events: [event]}, true))
-    f.model.scene.remove(f.meshes[0])
-    assert.throws(() => nativeEvents(f.model, {frameCount: 4, eventProfile: 'ponybook-v1', events: [
+    assert.throws(() => nativeEvents(f.model, [
         {frame: 0, type: 'SubObject', meshes: [10], visible: true},
-    ]}, true), /SubObject/)
-    f.model.scene.add(f.meshes[0])
+    ] as any, 4, true), /Unsupported native animation event/)
     disposeGLTF(f.model)
 })
 

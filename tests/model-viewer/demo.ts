@@ -54,7 +54,7 @@ const app = createApp({
 app.use(createI18n({ legacy: false, locale: 'en', fallbackLocale: 'en', messages: { en: messages } }))
 // Supply the client flags consumed by ATP's existing ClientOnly dialog. The
 // production route obtains this context from Vike, not from this demo harness.
-setPageContext(app, { isClientSide: true, isHydration: false } as PageContext)
+setPageContext(app, { isClientSide: true, isHydration: false, urlPathname: '/' } as PageContext)
 app.mount('#app')
 
 // A test-only entry for exercising the public runtime controller. The ordinary

@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import * as THREE from 'three'
 import { bindAnimation as bindNativeAnimation } from '../../src/components/model-viewer/animation'
+import { prepareWardrobe } from '../../src/components/model-viewer/wardrobe'
 import { nativeEventPlayback, nativeGestures, prepareNativeEyes as prepareEyes } from '../../src/components/model-viewer/interactions'
 
 // Execute the actual runtime and attachment bodies with real Three.js math and
@@ -30,9 +31,25 @@ function model(name: string) {
     return { name, scene, bone, scenes: [scene], animations: [] }
 }
 
-function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effects' | 'visibility' | 'overlap' = 'normal') {
+function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effects' | 'visibility' | 'overlap' | 'wardrobe' | 'pending-wardrobe' | 'failed-wardrobe' = 'normal', holdAnimation = false) {
     const parent = model('parent')
     const child = model('child')
+    const clothing = model('wardrobe')
+    clothing.bone.position.set(1, 4, 2)
+    const outfit = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial())
+    clothing.scene.add(outfit)
+    const clothingMeshes = clothing.scene.children.filter(object => object instanceof THREE.Mesh)
+    Object.assign(clothing, {parser: {
+        json: {nodes: clothingMeshes.map((_, index) => ({extras: {atpNativeMeshIndex: index}})), extras: {atpWardrobe: {
+            version: 1, defaults: {Body: 'body', Mane: 'mane', Tail: 'tail'},
+            sets: {normal: {Body: 'body', Mane: 'mane', Tail: 'tail'}, outfit: {Body: 'outfit'}},
+            parts: {body: {slot: 'Body', meshes: [0]}, outfit: {slot: 'Body', meshes: [1]},
+                mane: {slot: 'Mane', meshes: []}, tail: {slot: 'Tail', meshes: []}},
+        }}},
+        associations: new Map(clothingMeshes.map((mesh, index) => [mesh, {nodes: index}])),
+    }})
+    let wardrobeRequested = 0
+    let completeAnimation: (() => void) | undefined
     const prop = new THREE.Mesh(new THREE.BoxGeometry(), new THREE.MeshBasicMaterial())
     prop.visible = false
     parent.scene.add(prop)
@@ -40,8 +57,8 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
     if (mode === 'overlap') {
         const body = parent.scene.children.find(object => object instanceof THREE.Mesh)!
         const rig = {version: 1, key: 'a'.repeat(64), parents: [-1], jointNodes: [1], coordinateSystem: 'native-Y-down-to-glTF-Y-up-RxPi'}
-        const json = {nodes: [{children: [1, 2]}, {}, {extras: {atpNativeMeshIndex: 0, atpDefaultVisible: true}},
-            {extras: {atpNativeMeshIndex: 1, atpDefaultVisible: false}}], scenes: [{nodes: [0]}],
+        const json = {nodes: [{children: [1, 2]}, {}, {name: 'NativeMesh_0', mesh: 0, extras: {atpNativeMeshIndex: 0, atpDefaultVisible: true}},
+            {name: 'NativeMesh_1', mesh: 1, extras: {atpNativeMeshIndex: 1, atpDefaultVisible: false}}], meshes: [{name: 'eye_open'}, {name: 'eye_closed'}], scenes: [{nodes: [0]}],
             extras: {atpRig: rig, atpInteractions: {version: 1, hiddenNodes: [3], subObjects: [0, 1], eyes: {Open: [0], Closed: [1]}, effects: {stars: {}}}}}
         Object.assign(parent, {parser: {json, associations: new Map<THREE.Object3D, {nodes: number}>([[parent.scene, {nodes: 0}], [parent.bone, {nodes: 1}], [body, {nodes: 2}], [prop, {nodes: 3}]]),
             getDependency: async (_: string, index: number) => [parent.scene, parent.bone, body, prop][index]}})
@@ -103,18 +120,20 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         getDistance() { return this.camera.position.distanceTo(this.target) }
     }
     const animation = { id: 'move', name: 'Move', duration: 1, sha256: 'parent-animation' }
-    if (mode === 'overlap') Object.assign(animation, {rigKey: 'a'.repeat(64), eventBinding: {version: 1, events: [
+    if (mode === 'overlap') Object.assign(animation, {rigKey: 'a'.repeat(64), eventBinding: {version: 2, visibility: [
+        {meshName: 'eye_open', times: [0, .5], values: [true, true]},
+        {meshName: 'eye_closed', times: [0, .5], values: [true, true]},
+    ], events: [
         {frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: true},
-        {frame: 0, type: 'SubObject', meshes: [0, 1], visible: true},
         {frame: 0, type: 'Emitter', effect: 'stars'},
         {frame: 3, type: 'Emitter', effect: 'stars'},
-        {frame: 15, type: 'SubObject', meshes: [0, 1], visible: true},
     ]}})
     const secondAnimation = {...animation, id: 'other', name: 'Other'}
     const childAnimation = { id: 'idle', name: 'Idle', duration: 1, sha256: 'child-animation' }
     const childRef = { rigKey: 'child-rig', animations: [childAnimation] }
     const ref = {
         rigKey: 'parent-rig', animations: [animation, secondAnimation],
+        wardrobe: {rigKey: 'parent-rig'},
         additionalActor: {
             model: childRef, parentRoot: 0, controller: 'native-first-then-random-v1',
             transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 10, 0, 0, 1],
@@ -122,7 +141,15 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
     }
     async function loadGLB(asset: unknown, signal: AbortSignal) {
         signal.throwIfAborted()
+        if (holdAnimation && asset === secondAnimation) await new Promise<void>(resolve => { completeAnimation = resolve })
         if (asset === ref) return parent
+        if (asset === ref.wardrobe) {
+            wardrobeRequested++
+            if (mode === 'failed-wardrobe') throw new Error('Wardrobe unavailable')
+            if (mode === 'pending-wardrobe') return await new Promise((_resolve, reject) =>
+                signal.addEventListener('abort', () => reject(signal.reason), {once: true}))
+            return clothing
+        }
         if (asset === childRef) {
             childRequested = true
             if (mode === 'pending-child') {
@@ -139,12 +166,13 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         THREE: { ...THREE, WebGLRenderer: Renderer },
         loadGLB,
         disposeGLTF(value: { name: string }) { disposed.push(value.name) },
-        rigMetadata(value: unknown) { return { key: value === parent ? ref.rigKey : childRef.rigKey, jointNodes: [1] } },
+        rigMetadata(value: unknown) { return { key: value === child ? childRef.rigKey : ref.rigKey, jointNodes: [1] } },
         jointObjects(value: typeof parent) { return new Map([[1, value.bone]]) },
         checkAdditionalActor() {},
         applyNativeDepth() {},
         nativeUVClock() { return { active: false, update() {}, snapshot() { return undefined } } },
         nativeEventPlayback, nativeGestures,
+        prepareWardrobe,
         async prepareNativeEyes() {
             if (mode === 'overlap') return prepareEyes(parent as any, new AbortController().signal)
             if (mode === 'visibility') return {
@@ -164,11 +192,11 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         async bindAnimation(value: typeof parent, _source: unknown, selected: typeof animation) {
             if (mode === 'overlap' && value === parent) return bindNativeAnimation(parent as any, nativeSource, selected as any, true)
             const track = new THREE.VectorKeyframeTrack(`${value.bone.uuid}.position`, [0, 1],
-                value === parent ? [3, 9, 5, 3, 9, 5] : [0, 0, 0, 1, 0, 0], THREE.InterpolateLinear)
+                value !== child ? [3, 9, 5, 3, 9, 5] : [0, 0, 0, 1, 0, 0], THREE.InterpolateLinear)
             const tracks: THREE.KeyframeTrack[] = [track]
             if (mode === 'visibility' && value === parent) tracks.push(new THREE.BooleanKeyframeTrack(`${prop.uuid}.visible`, [0, .5], [selected.id === 'move', selected.id !== 'move']))
             return Object.assign(new THREE.AnimationClip(value === parent ? 'Move' : 'Idle', 1, tracks), {
-                nativeFPS: 30, nativeEvents: mode !== 'eventful' || value !== parent ? [] : [
+                nativeFPS: 30, nativeEvents: mode !== 'eventful' || value === child ? [] : [
                     {frame: 0, type: 'EyeSet', state: 'Happy', enableBlink: false},
                     {frame: 1, type: 'EyeSet', state: 'Frown', enableBlink: false},
                     {frame: 2, type: 'Emitter', effect: 'stars'},
@@ -186,6 +214,8 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
     const viewer = runtime.mountViewer({ clientWidth: 400, clientHeight: 300, appendChild() {} }, ref,
         (state: unknown) => changes.push(state))
     return {
+        completeAnimation: () => completeAnimation?.(),
+        wardrobeRequested: () => wardrobeRequested, clothing, clothingMeshes,
         viewer, parent, child, animation, secondAnimation, prop, disposed, frames, changes, renders, listeners,
         childRequested: () => childRequested,
         childAborted: () => childAborted,
@@ -200,7 +230,7 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         hidden(value: boolean) { document.hidden = value; listeners.get('visibilitychange')!() },
         close() {
             viewer.dispose()
-            for (const value of [parent, child]) value.scene.traverse(object => {
+            for (const value of [parent, child, clothing]) value.scene.traverse(object => {
                 if (object instanceof THREE.Mesh) { object.geometry.dispose(); (object.material as THREE.Material).dispose() }
             })
         },
@@ -389,4 +419,109 @@ test('actual runtime composes overlapping eye tracks, blinking, seeks and loop r
         assert.equal(f.eventLog.length, count + 2, 'seeking an ended action emits each reconstructed event once')
         assert.deepEqual([body.visible, f.prop.visible], [true, true])
     } finally { f.close() }
+})
+
+
+test('wardrobe upgrade is lazy and reuses camera and companion; failed or cancelled loads preserve lifecycle', async () => {
+    const f = fixture('wardrobe')
+    try {
+        await f.viewer.ready
+        assert.equal(f.wardrobeRequested(), 0)
+        await f.viewer.play(f.animation)
+        const before = f.viewer.snapshot()
+        await Promise.all([f.viewer.openWardrobe(), f.viewer.openWardrobe()])
+        const after = f.viewer.snapshot()
+        assert.equal(f.wardrobeRequested(), 1)
+        assert.equal(after.error, '')
+        assert.deepEqual(after.position, before.position)
+        assert.equal(after.additional.currentId, before.additional.currentId)
+        assert.equal(after.additional.transitions, before.additional.transitions)
+        assert.equal(after.additional.cachedAnimations, before.additional.cachedAnimations)
+        assert.equal(f.disposed.filter(name => name === 'parent').length, 1)
+        assert.equal(f.disposed.includes('child'), false)
+        await f.viewer.play(f.animation)
+        assert.deepEqual(f.clothing.bone.position.toArray(), [3, 9, 5])
+        assert.deepEqual(f.viewer.snapshot().additional.matrix.slice(12, 15), [12, 0, 3])
+        f.viewer.reset()
+        assert.deepEqual(f.clothing.bone.position.toArray(), [1, 4, 2])
+        await f.viewer.openWardrobe()
+        assert.equal(f.wardrobeRequested(), 1)
+    } finally { f.close() }
+    assert.equal(f.disposed.filter(name => name === 'wardrobe').length, 1)
+    const failed = fixture('failed-wardrobe')
+    try {
+        await failed.viewer.ready
+        await failed.viewer.openWardrobe()
+        assert.equal(failed.viewer.snapshot().ready, true)
+        assert.match(failed.viewer.snapshot().error, /Wardrobe unavailable/)
+        assert.equal(failed.disposed.includes('parent'), false)
+        await failed.viewer.play(failed.animation)
+        assert.equal(failed.viewer.snapshot().playing, true)
+    } finally { failed.close() }
+    const pending = fixture('pending-wardrobe')
+    await pending.viewer.ready
+    const request = pending.viewer.openWardrobe()
+    pending.close()
+    await request
+    assert.equal(pending.viewer.snapshot().disposed, true)
+    assert.equal(pending.frames.size, 0)
+})
+
+
+test('failed wardrobe preserves a pending animation load and does not resume the previous clip on seek', async () => {
+    const f = fixture('failed-wardrobe', true)
+    try {
+        await f.viewer.ready
+        await f.viewer.play(f.animation)
+        const pending = f.viewer.play(f.secondAnimation)
+        assert.equal(f.viewer.snapshot().loading, true)
+        await f.viewer.openWardrobe()
+        assert.equal(f.viewer.snapshot().loading, true)
+        f.viewer.seek(.2)
+        assert.equal(f.viewer.snapshot().playing, false, 'seek must not resume the cached previous clip while another loads')
+        f.completeAnimation()
+        await pending
+        assert.equal(f.viewer.snapshot().activeAnimation, 'other')
+        assert.equal(f.viewer.snapshot().loading, false)
+    } finally { f.completeAnimation(); f.close() }
+})
+
+
+test('clothing changes keep the current animation, native events and pending animation load running', async () => {
+    const f = fixture('eventful', true)
+    try {
+        await f.viewer.ready
+        await f.viewer.openWardrobe()
+        await f.viewer.play(f.animation)
+        f.tick(0); f.tick(40)
+        const before = f.viewer.snapshot()
+        for (const change of [
+            () => f.viewer.selectPart('outfit'),
+            () => f.viewer.selectPart('outfit'),
+        ]) {
+            change()
+            const after = f.viewer.snapshot()
+            for (const key of ['playing', 'time', 'activeAnimation', 'eyes', 'effects', 'additional']) {
+                assert.deepEqual(after[key], before[key], `clothing must preserve ${key}`)
+            }
+            assert.equal(f.clothingMeshes[1].visible, after.wardrobe.Body === 'outfit')
+            assert.equal(f.clothingMeshes[0].visible, after.wardrobe.Body === 'body')
+        }
+        f.viewer.selectPart('outfit')
+        f.tick(80)
+        assert.ok(f.viewer.snapshot().time > before.time)
+        assert.equal(f.eventLog.filter(event => event.name === 'stars').length, 1)
+        assert.equal(f.eventLog.filter(event => event.type === 'EyeSet').length, 2)
+        f.viewer.seek(1)
+        assert.equal(f.viewer.snapshot().playing, false)
+        assert.equal(f.viewer.snapshot().atRest, true)
+        assert.equal(f.clothingMeshes[1].visible, true, 'the finished action keeps the chosen clothing')
+        const pending = f.viewer.play(f.secondAnimation)
+        f.viewer.selectPart('outfit')
+        assert.equal(f.viewer.snapshot().loading, true, 'clothing must not cancel an animation request')
+        f.completeAnimation()
+        await pending
+        assert.equal(f.viewer.snapshot().activeAnimation, 'other')
+        assert.equal(f.clothingMeshes[0].visible, true)
+    } finally { f.completeAnimation(); f.close() }
 })

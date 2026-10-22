@@ -31,7 +31,7 @@ function fixture() {
     const model = make()
     const source = make()
     const times = [0, .5, 1]
-    source.json.extras.atpClip = {fps: 2, frameCount: 2, duration: 1, events: []}
+    source.json.extras.atpClip = {fps: 2, frameCount: 2, duration: 1}
     source.json.accessors = [{count: 3}, {count: 3}]
     const channels = [1, 2].flatMap(node => ['translation', 'rotation'].map(path => ({sampler: 0, target: {node, path}})))
     source.json.animations = [{channels, samplers: [{input: 0, output: 1, interpolation: 'STEP'}]}]
@@ -92,15 +92,14 @@ test('supported events require an explicit controller and preserve STEP/native s
         model.json.extras.atpInteractions = {version: 1, eyes: {Open: [0], Closed: [1]}}
         const events = [{frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: false},
             {frame: 1, type: 'EyeSet', state: 'Open', enableBlink: true}]
-        source.json.extras.atpClip.eventProfile = 'ponybook-v1'
-        source.json.extras.atpClip.events = events
+        ref.eventBinding = {version: 2, events: events as any, visibility: []}
         await assert.rejects(bindAnimation(model.gltf, source.gltf, ref), /events are not supported/)
         const clip = await bindAnimation(model.gltf, source.gltf, ref, true)
         assert.deepEqual(clip.nativeEvents, events)
         assert.equal(clip.nativeFPS, 2)
         assert.notEqual(clip.nativeEvents, events)
         assert.equal(clip.tracks[0].getInterpolation(), sampling === 'native' ? undefined : InterpolateDiscrete)
-        source.json.extras.atpClip.events.push({frame: 1, type: 'Sound', file: 'unhandled'})
+        ;(ref.eventBinding.events as any[]).push({frame: 1, type: 'Sound', file: 'unhandled'})
         await assert.rejects(bindAnimation(model.gltf, source.gltf, ref, true), /Unsupported native animation event/)
     }
 })
@@ -139,11 +138,10 @@ test('native sampling interpolates raw global quaternions before deriving local 
 test('per-model event bindings reuse skeletal source without leaking events between references', async () => {
     const {model, source, ref} = fixture()
     model.json.extras.atpInteractions = {version: 1, eyes: {Open: [0], Closed: [1]}}
-    delete source.json.extras.atpClip.events
-    const closed: AnimationRef = {...ref, eventBinding: {version: 1, events: [
+    const closed: AnimationRef = {...ref, eventBinding: {version: 2, visibility: [], events: [
         {frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: false},
     ]}}
-    const opened: AnimationRef = {...ref, id: 'other', eventBinding: {version: 1, events: [
+    const opened: AnimationRef = {...ref, id: 'other', eventBinding: {version: 2, visibility: [], events: [
         {frame: 1, type: 'EyeSet', state: 'Open', enableBlink: true},
     ]}}
     const a = await bindAnimation(model.gltf, source.gltf, closed, true)
@@ -154,25 +152,26 @@ test('per-model event bindings reuse skeletal source without leaking events betw
     await assert.rejects(bindAnimation(model.gltf, source.gltf, closed), /events are not supported/)
     source.json.extras.atpClip.eventProfile = 'ponybook-v1'
     source.json.extras.atpClip.events = [{frame: 0, type: 'Sound'}]
-    await assert.rejects(bindAnimation(model.gltf, source.gltf, closed, true), /competing.*event/i)
+    await assert.rejects(bindAnimation(model.gltf, source.gltf, closed, true), /Embedded animation events/)
 })
 
 
-async function visibilityFixture(events: any[], fps = 30, frames = 150) {
+async function visibilityFixture(visibility: any[], fps = 30, frames = 150, events: any[] = []) {
     const f = fixture()
-    const meshes = [true, false, false].map(visible => {
+    const meshes = [true, false, false].map((visible, index) => {
         const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial())
-        mesh.name = 'duplicate_mesh_name'
+        mesh.name = ['eye_open', 'eye_closed', 'umbrella'][index]
         mesh.visible = visible
         return mesh
     })
     f.model.gltf.scene.add(...meshes)
     const json = f.model.json
+    json.meshes = meshes.map(mesh => ({name: mesh.name}))
     json.scenes = [{nodes: [0, 3]}]
     json.extras.atpInteractions = {version: 1, subObjects: [10, 11, 12], hiddenNodes: [4, 5],
         eyes: {Open: [10], Closed: [11]}, effects: {stars: {}}}
     for (let i = 0; i < meshes.length; i++) {
-        json.nodes.push({extras: {atpNativeMeshIndex: i + 10, atpDefaultVisible: i === 0}})
+        json.nodes.push({name: `NativeMesh_${i + 10}`, mesh: i, extras: {atpNativeMeshIndex: i + 10, atpDefaultVisible: i === 0}})
         f.model.gltf.parser.associations.set(meshes[i], {nodes: i + 3})
     }
     const dependency = f.model.gltf.parser.getDependency.bind(f.model.gltf.parser)
@@ -186,20 +185,24 @@ async function visibilityFixture(events: any[], fps = 30, frames = 150) {
     f.source.gltf.animations[0].duration = f.ref.duration = frames / fps
     f.source.json.accessors = [{count: frames + 1}, {count: frames + 1}]
     f.source.json.extras.atpClip = {fps, frameCount: frames, duration: frames / fps}
-    f.ref.eventBinding = {version: 1, events}
+    f.ref.eventBinding = {version: 2, events, visibility}
     const eyes = (await prepareNativeEyes(f.model.gltf, new AbortController().signal))!
     const clip = await bindAnimation(f.model.gltf, f.source.gltf, f.ref, true)
     return {...f, meshes, eyes, clip}
 }
 
-test('SubObject uses actual Boolean tracks and exact native times, independent of callbacks', async () => {
+test('generated visibility uses Boolean tracks and exact seconds, independent of callbacks', async () => {
     for (const [frame, fps] of [[1, 15], [4, 15], [101, 30], [123, 30]]) {
         const f = await visibilityFixture([
-            {frame, type: 'SubObject', meshes: [10, 11], visible: true},
-            {frame, type: 'SubObject', meshes: [10], visible: false},
+            {meshName: 'eye_open', times: [0, frame / fps], values: [true, false]},
+            {meshName: 'eye_closed', times: [0, frame / fps], values: [false, true]},
         ], fps)
         const tracks = f.clip.tracks.filter(track => track.name.endsWith('.visible'))
         assert.equal(tracks.length, 2)
+        assert.deepEqual(f.clip.visibility, [
+            {meshName: 'eye_open', times: [0, frame / fps], values: [true, false]},
+            {meshName: 'eye_closed', times: [0, frame / fps], values: [false, true]},
+        ])
         for (const track of tracks) {
             assert.ok(track instanceof BooleanKeyframeTrack)
             assert.ok(track.times instanceof Float64Array)
@@ -220,14 +223,15 @@ test('SubObject uses actual Boolean tracks and exact native times, independent o
     }
 })
 
-test('overlapping EyeSet and SubObject fold in both source orders; blink has a single track writer', async () => {
+test('generated eye visibility preserves native order and blinking has a single track writer', async () => {
     for (const eyeFirst of [false, true]) {
-        const eye = {frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: true}
-        const sub = {frame: 0, type: 'SubObject', meshes: [10, 11], visible: true}
-        const events = [...(eyeFirst ? [eye, sub] : [sub, eye]),
+        const f = await visibilityFixture([
+            {meshName: 'eye_open', times: [0, 1], values: [eyeFirst, true]},
+            {meshName: 'eye_closed', times: [0, 1], values: [true, true]},
+        ], 30, 150, [
+            {frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: true},
             {frame: 1, type: 'Emitter', effect: 'stars'},
-            {frame: 30, type: 'SubObject', meshes: [10, 11], visible: true}]
-        const f = await visibilityFixture(events)
+        ])
         const mixer = new AnimationMixer(f.model.gltf.scene)
         const action = mixer.clipAction(f.clip).play()
         f.eyes.useVisibility(f.clip.nativeVisibility)

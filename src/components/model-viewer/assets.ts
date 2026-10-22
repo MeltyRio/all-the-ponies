@@ -1,3 +1,4 @@
+import { SkinnedMesh, type Vector3, type Vector4 } from 'three'
 import { createAssetUrl } from '../../scripts/assets'
 import type { NativeEvent } from './interactions'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
@@ -9,11 +10,13 @@ export interface AssetRef {
     rigKey: string
 }
 
+export type VisibilityCurve = {meshName: string, times: number[], values: boolean[]}
+
 export interface AnimationRef extends AssetRef {
     id: string
     name: string
     duration: number
-    eventBinding?: {version: 1, events: NativeEvent[]}
+    eventBinding?: {version: 2, events: NativeEvent[], visibility: VisibilityCurve[]}
 }
 
 export interface ActorRef extends AssetRef {
@@ -28,6 +31,7 @@ export interface AdditionalActorRef {
 }
 
 export interface ModelRef extends ActorRef {
+    wardrobe?: AssetRef
     preferredAnimations?: string[]
     additionalActor?: AdditionalActorRef
     interactions?: {version: 1, clickAnimations: string[], dizzyAnimation?: string}
@@ -68,8 +72,8 @@ function checkActor(model: ActorRef, playable = false, identity?: string) {
         check(animation.rigKey === model.rigKey, 'Animation rig is incompatible')
         if (Object.prototype.hasOwnProperty.call(animation, 'eventBinding')) {
             const binding = animation.eventBinding
-            check(binding?.version === 1 && Object.keys(binding).sort().join(',') === 'events,version'
-                && Array.isArray(binding.events), 'Unsupported animation event binding')
+            check(binding?.version === 2 && Object.keys(binding).sort().join(',') === 'events,version,visibility'
+                && Array.isArray(binding.events) && Array.isArray(binding.visibility), 'Unsupported animation event binding')
         }
         ids.add(animation.id)
     }
@@ -108,7 +112,7 @@ async function fetchJson(path: string, signal: AbortSignal, version?: string) {
 
 /** Use ATP's uploaded manifest version, not a pre-upload JSON byte digest.
  * game-data rewrites JSON before upload; its manifest hashes the final bytes.
- * The JSON describes resources semantically; binary GLBs are verified below.
+ * The manifest version selects the catalogue using the normal ATP asset URL.
  */
 export async function resolveModel(identity: string, signal: AbortSignal): Promise<ModelRef | null> {
     const manifest = await fetchJson('manifest.json', signal) as Record<string, unknown>
@@ -147,6 +151,10 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
     const model = catalogue.models[identity]
     expandAnimations(model)
     checkActor(model, false, identity)
+    if (model.wardrobe !== undefined) {
+        checkAsset(model.wardrobe)
+        check(model.wardrobe.rigKey === model.rigKey, 'Wardrobe rig is incompatible')
+    }
     if (Object.prototype.hasOwnProperty.call(model, 'additionalActor')) {
         check(catalogue.schemaVersion >= 2, 'Additional actors require catalogue version 2 or later')
         expandAnimations(model.additionalActor?.model)
@@ -170,10 +178,7 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
     return model
 }
 
-export async function verifiedBytes(ref: AssetRef, signal: AbortSignal): Promise<ArrayBuffer> {
-    // Identity and resource role are checked by resolveModel; this boundary
-    // checks the safe key again before fetching and verifies the actual bytes.
-    checkAsset(ref, undefined, true)
+export async function fetchBytes(ref: AssetRef, signal: AbortSignal): Promise<ArrayBuffer> {
     signal.throwIfAborted()
     const immutable = ref.path === `models/3d/${ref.sha256}.glb`
         || ref.path.startsWith(`models/3d/${ref.sha256}/`)
@@ -184,10 +189,6 @@ export async function verifiedBytes(ref: AssetRef, signal: AbortSignal): Promise
     const bytes = await response.arrayBuffer()
     signal.throwIfAborted()
     check(bytes.byteLength === ref.bytes, '3D resource size mismatch')
-    const digest = await crypto.subtle.digest('SHA-256', bytes)
-    signal.throwIfAborted()
-    const hash = Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('')
-    check(hash === ref.sha256, '3D resource digest mismatch')
     return bytes
 }
 
@@ -211,9 +212,9 @@ export function disposeGLTF(gltf: GLTF) {
 }
 
 export async function loadGLB(ref: AssetRef, signal: AbortSignal): Promise<GLTF> {
-    const bytes = await verifiedBytes(ref, signal)
+    const bytes = await fetchBytes(ref, signal)
     // This profile embeds all buffers and images. Reject external dependencies
-    // before GLTFLoader can fetch anything beyond the verified catalogue key.
+    // before GLTFLoader can fetch anything beyond the catalogue key.
     const header = new DataView(bytes)
     check(bytes.byteLength >= 20 && header.getUint32(0, true) === 0x46546c67
         && header.getUint32(4, true) === 2 && header.getUint32(8, true) === bytes.byteLength
@@ -226,6 +227,31 @@ export async function loadGLB(ref: AssetRef, signal: AbortSignal): Promise<GLTF>
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
     signal.throwIfAborted()
     const gltf = await new GLTFLoader().parseAsync(bytes, '')
+    // GLTFLoader normalizes WEIGHTS_0. Native RK shaders sum the original
+    // components instead; restore them after loading for both CPU and GPU skinning.
+    gltf.scene.traverse(object => {
+        if (!(object instanceof SkinnedMesh)) return
+        const geometry = object.geometry
+        const joints = geometry.getAttribute('_native_joints'), weights = geometry.getAttribute('_native_weights')
+        if (!joints && !weights) return
+        check(joints?.itemSize === 4 && weights?.itemSize === 4
+            && joints.count === geometry.getAttribute('position').count && weights.count === joints.count,
+            'Invalid native skin attributes')
+        geometry.setAttribute('skinIndex', joints)
+        geometry.setAttribute('skinWeight', weights)
+        object.applyBoneTransform = function<T extends Vector3 | Vector4>(this: SkinnedMesh, index: number, point: T): T {
+            const w = 'w' in point ? point.w : 1
+            SkinnedMesh.prototype.applyBoneTransform.call(this, index, point)
+            // Match the GPU's W=sum(weights) through bindMatrixInverse. Three's
+            // CPU helper restores the input W before this inverse transform.
+            const sum = weights.getX(index) + weights.getY(index) + weights.getZ(index) + weights.getW(index)
+            const inverse = this.bindMatrixInverse.elements, delta = (sum - 1) * w
+            point.x += inverse[12] * delta
+            point.y += inverse[13] * delta
+            point.z += inverse[14] * delta
+            return point
+        }
+    })
     if (signal.aborted) {
         disposeGLTF(gltf)
         signal.throwIfAborted()

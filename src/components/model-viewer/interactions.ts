@@ -7,7 +7,6 @@ type EyeState = typeof eyeStates[number] | 'None'
 export type NativeEvent = {frame: number} & (
     {type: 'EyeSet', state: EyeState, enableBlink: boolean}
     | {type: 'Emitter', effect: string}
-    | {type: 'SubObject', meshes: number[], visible: boolean}
 )
 
 /** While a clip owns a mesh, only its Boolean track writes mesh.visible.
@@ -70,7 +69,9 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
     const subObjects: number[] = profile.subObjects ?? []
     check(Array.isArray(subObjects) && new Set(subObjects).size === subObjects.length
         && subObjects.every(index => Number.isSafeInteger(index) && meshes.has(index)), 'Invalid SubObject mesh reference')
-    const controlled = new Set([...allEyes, ...subObjects])
+    const wardrobe = new Set<number>(Object.values(model.parser.json.extras?.atpWardrobe?.parts ?? {})
+        .flatMap((part: {meshes: number[]}) => part.meshes))
+    const controlled = new Set([...allEyes, ...subObjects, ...wardrobe])
     check(hidden.every(index => controlled.has(json.nodes[index].extras.atpNativeMeshIndex)), 'Hidden node has no native controller')
     // An empty Open group is a legal static appearance, not enough evidence to
     // invent blinking. Other expressions may share native subobjects.
@@ -91,7 +92,7 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
         // Native reset restores the expression, without restarting the blink
         // timer/phase. Seeks and loops retain that rule but clear track overrides.
         visibility?.reset()
-        for (const [index, mesh] of meshes) if (!visibility?.owns(index)) mesh.visible = defaults.get(mesh)!
+        for (const [index, mesh] of meshes) if (!wardrobe.has(index) && !visibility?.owns(index)) mesh.visible = defaults.get(mesh)!
         expression = 'Open'
         enabled = true
     }
@@ -115,7 +116,7 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
         resetPlayback,
         reset() {
             visibility?.reset()
-            for (const [mesh, visible] of defaults) mesh.visible = visible
+            for (const [index, mesh] of meshes) if (!wardrobe.has(index)) mesh.visible = defaults.get(mesh)!
             expression = 'Open'
             enabled = true
         },
@@ -129,44 +130,27 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
 /** A supported event profile is opt-in. Other callers (including independent
  * companions) keep rejecting eventful clips until they have a controller.
  */
-export function nativeEvents(model: GLTF, metadata: any, allow: boolean): NativeEvent[] {
-    const events = metadata.events
-    if (events === undefined || Array.isArray(events) && events.length === 0) {
-        check(metadata.eventProfile === undefined || metadata.eventProfile === 'ponybook-v1', 'Unsupported animation event profile')
-        return []
-    }
-    check(allow && metadata.eventProfile === 'ponybook-v1' && Array.isArray(events), 'Animation events are not supported by this viewer')
+export function nativeEvents(model: GLTF, events: NativeEvent[], frameCount: number, allow: boolean): NativeEvent[] {
+    if (events.length === 0) return []
+    check(allow, 'Animation events are not supported by this viewer')
     const profile = model.parser.json.extras?.atpInteractions
     check(profile?.version === 1, 'Model has no native interaction profile')
     let previous = -1
     for (const event of events) {
         check(event && Number.isSafeInteger(event.frame) && event.frame >= previous
-            && event.frame >= 0 && event.frame < metadata.frameCount, 'Invalid native event frame')
+            && event.frame >= 0 && event.frame < frameCount, 'Invalid native event frame')
         previous = event.frame
         if (event.type === 'EyeSet') {
             check(Object.keys(event).sort().join(',') === 'enableBlink,frame,state,type'
                 && [...eyeStates, 'None'].includes(event.state) && typeof event.enableBlink === 'boolean'
                 && profile.eyes && (event.state === 'None' || Array.isArray(profile.eyes[event.state])), 'Unsupported eye event')
-        } else if (event.type === 'SubObject') {
-            const actual = new Set<number>()
-            model.scene.traverse(object => {
-                if (object instanceof Mesh) {
-                    const index = model.parser.associations.get(object)?.nodes
-                    actual.add(model.parser.json.nodes?.[index]?.extras?.atpNativeMeshIndex)
-                }
-            })
-            check(Object.keys(event).sort().join(',') === 'frame,meshes,type,visible'
-                && typeof event.visible === 'boolean' && Array.isArray(event.meshes) && event.meshes.length > 0
-                && new Set(event.meshes).size === event.meshes.length
-                && event.meshes.every((index: number) => Number.isSafeInteger(index) && index >= 0
-                    && profile.subObjects?.includes(index) && actual.has(index)), 'Unresolved native SubObject event')
         } else if (event.type === 'Emitter') {
             check(Object.keys(event).sort().join(',') === 'effect,frame,type'
                 && typeof event.effect === 'string' && Object.prototype.hasOwnProperty.call(profile.effects ?? {}, event.effect),
             'Unresolved native emitter event')
         } else throw new Error('Unsupported native animation event')
     }
-    return events.map(event => event.type === 'SubObject' ? {...event, meshes: [...event.meshes]} : {...event})
+    return events.map(event => ({...event}))
 }
 
 
@@ -174,8 +158,8 @@ export function nativeEvents(model: GLTF, metadata: any, allow: boolean): Native
  * restores defaults before reconstructing the new local time; late emitters
  * receive their age so seeking cannot leave stale effects or visibility.
  */
-export function nativeEventPlayback(events: Exclude<NativeEvent, {type: 'SubObject'}>[], fps: number, controller: {
-    reset(): void, apply(event: Exclude<NativeEvent, {type: 'SubObject'}>, age: number): void,
+export function nativeEventPlayback(events: NativeEvent[], fps: number, controller: {
+    reset(): void, apply(event: NativeEvent, age: number): void,
 }) {
     let cursor = 0, previous = -1, previousCycle = 0
     function reset() {

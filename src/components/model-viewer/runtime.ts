@@ -7,6 +7,7 @@ import { loadAdditionalActor, type AdditionalActor } from './additional';
 import { applyNativeDepth, nativeUVClock } from './native-materials';
 import { hitsModel, nativeEventPlayback, nativeGestures, prepareNativeEyes } from './interactions';
 import { createNativeEmitters } from './emitter';
+import { prepareWardrobe } from './wardrobe';
 
 export type ViewerState = {
     ready: boolean,
@@ -15,6 +16,7 @@ export type ViewerState = {
     free: boolean,
     activeAnimation: string,
     error: string,
+    wardrobeLoading?: boolean,
 }
 
 /** Shared position buffers can contain unused vertices; fit rendered triangles. */
@@ -58,6 +60,8 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     let disposed = false
     let model: GLTF | undefined
     let additional: AdditionalActor | undefined
+    let wardrobe: ReturnType<typeof prepareWardrobe>
+    let wardrobeRequest: Promise<void> | undefined
     let materialClock: ReturnType<typeof nativeUVClock> | undefined
     let eyes: Awaited<ReturnType<typeof prepareNativeEyes>>
     let effects: Awaited<ReturnType<typeof createNativeEmitters>> | undefined
@@ -293,7 +297,6 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
                 clips.set(animation.id, clip)
             }
             if (disposed || abort.signal.aborted || token !== generation) return
-            if (Math.abs(clip.duration - animation.duration) > 1e-4) throw new Error('Animation duration mismatch')
             animationAbort = undefined
             start(clip, animation)
             mixer!.update(0)
@@ -311,15 +314,26 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         }
     }
 
+    function releaseModel() {
+        effects?.dispose()
+        effects = undefined
+        eyes = undefined
+        wardrobe = undefined
+        materialClock = undefined
+        mixer?.removeEventListener('finished', onFinished)
+        mixer?.removeEventListener('loop', onLoop)
+        if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
+        mixer = undefined
+        clips.clear()
+        rest = []
+    }
     function dispose() {
         if (disposed) return
         disposed = true
         stop()
         modelAbort.abort()
         additional?.dispose()
-        effects?.dispose()
-        effects = undefined
-        eyes = undefined
+        releaseModel()
         gestures.clear(true)
         observer.disconnect()
         controls.removeEventListener('change', render)
@@ -330,12 +344,6 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
         canvas.removeEventListener('pointerup', pointerup)
         canvas.removeEventListener('pointercancel', pointerup)
         document.removeEventListener('visibilitychange', visibility)
-        mixer?.removeEventListener('finished', onFinished)
-        mixer?.removeEventListener('loop', onLoop)
-        if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
-        materialClock = undefined
-        clips.clear()
-        rest = []
         renderer.dispose()
         renderer.forceContextLoss()
         canvas.remove()
@@ -347,6 +355,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             ...(materialClock?.active ? { nativeMaterial: materialClock.snapshot() } : {}),
             ...(eyes ? {eyes: eyes.snapshot()} : {}),
             ...(effects ? {effects: effects.snapshot()} : {}),
+            ...(wardrobe ? {wardrobe: wardrobe.snapshot()} : {}),
             spins: gestures.spins,
             polar: controls.getPolarAngle(), azimuth: controls.getAzimuthalAngle(), distance: controls.getDistance(),
             position: camera.position.toArray(), target: controls.target.toArray(),
@@ -355,33 +364,46 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
                 && item.object.scale.distanceTo(item.scale) < 1e-7),
         }
     }
-    resize()
-    notify()
-    const ready = (async () => {
+    // Prepare the optional bundle while the existing model keeps rendering.
+    // Both paths use the same material, interaction and animation setup.
+    async function installModel(wardrobeBundle = false) {
         let preparing: GLTF | undefined
+        let preparingEffects: Awaited<ReturnType<typeof createNativeEmitters>> | undefined
         try {
-            const loaded = await loadGLB(ref, modelAbort.signal)
-            if (disposed) { disposeGLTF(loaded); return }
+            const loaded = await loadGLB(wardrobeBundle ? ref.wardrobe! : ref, modelAbort.signal)
             preparing = loaded
             const nativeEyes = await prepareNativeEyes(loaded, modelAbort.signal)
-            const nativeEffects = await createNativeEmitters(loaded, scene, camera)
-            if (disposed || modelAbort.signal.aborted) { nativeEffects.dispose(); return }
+            const nativeWardrobe = wardrobeBundle ? prepareWardrobe(loaded) : undefined
+            if (wardrobeBundle && !nativeWardrobe) throw new Error('Wardrobe data is absent')
+            if (rigMetadata(loaded).key !== ref.rigKey) throw new Error('Model rig identity mismatch')
+            if (loaded.animations.length) throw new Error('Static model unexpectedly contains animations')
+            applyNativeDepth(loaded)
+            const clock = nativeUVClock(loaded)
+            const joints = [...jointObjects(loaded).values()].map(object => ({
+                object, position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
+            }))
+            preparingEffects = await createNativeEmitters(loaded, scene, camera)
+            modelAbort.signal.throwIfAborted()
+            if (wardrobeBundle) {
+                stop()
+                additional?.rebindParent(loaded)
+                releaseModel()
+                selected = undefined
+                gestures.clear(true)
+            }
             model = loaded
             preparing = undefined
             eyes = nativeEyes
-            effects = nativeEffects
-            if (rigMetadata(model).key !== ref.rigKey) throw new Error('Model rig identity mismatch')
-            if (model.animations.length) throw new Error('Static model unexpectedly contains animations')
-            applyNativeDepth(model)
-            materialClock = nativeUVClock(model)
+            wardrobe = nativeWardrobe
+            effects = preparingEffects
+            preparingEffects = undefined
+            materialClock = clock
+            rest = joints
             scene.add(model.scene)
-            rest = [...jointObjects(model).values()].map(object => ({
-                object, position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
-            }))
             mixer = new THREE.AnimationMixer(model.scene)
             mixer.addEventListener('finished', onFinished)
             mixer.addEventListener('loop', onLoop)
-            if (ref.additionalActor) {
+            if (!wardrobeBundle && ref.additionalActor) {
                 additional = await loadAdditionalActor(ref.additionalActor, model, modelAbort.signal,
                     () => { if (state.ready) { resume(); render() } },
                     error => {
@@ -394,6 +416,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
                 if (disposed) { additional.dispose(); return }
                 scene.add(additional.group)
             }
+            if (!wardrobeBundle) {
             const box = visibleBounds(model.scene)
             if (additional) box.union(visibleBounds(additional.group))
             const center = box.getCenter(new THREE.Vector3())
@@ -410,27 +433,62 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             controls.update()
             initial = {position: camera.position.clone(), target: center.clone(), polar: controls.getPolarAngle()}
             controls.minPolarAngle = controls.maxPolarAngle = initial.polar
+            }
             state.ready = true
             state.loading = false
+            state.error = ''
             notify()
             render()
             resume()
         } catch (error) {
-            additional?.dispose()
-            effects?.dispose()
-            effects = undefined
-            eyes = undefined
-            materialClock = undefined
-            mixer?.removeEventListener('finished', onFinished)
-            mixer?.removeEventListener('loop', onLoop)
-            if (model) { mixer?.uncacheRoot(model.scene); disposeGLTF(model); scene.remove(model.scene); model = undefined }
+            if (!wardrobeBundle) { additional?.dispose(); releaseModel() }
             if (disposed || modelAbort.signal.aborted) return
-            state.loading = false
+            if (!wardrobeBundle) state.loading = false
             state.error = error instanceof Error ? error.message : String(error)
             notify()
         } finally {
+            preparingEffects?.dispose()
             if (preparing) disposeGLTF(preparing)
         }
-    })()
-    return {ready, play, seek, setLoop, replay, reset, setFree, dispose, snapshot}
+    }
+    async function openWardrobe() {
+        if (disposed || !state.ready || !ref.wardrobe || wardrobe) return
+        if (wardrobeRequest) return wardrobeRequest
+        state.wardrobeLoading = true
+        notify()
+        wardrobeRequest = installModel(true).finally(() => {
+            wardrobeRequest = undefined
+            state.wardrobeLoading = false
+            if (!disposed) notify()
+        })
+        return wardrobeRequest
+    }
+    function changeWardrobe(change: (value: NonNullable<typeof wardrobe>) => void) {
+        if (disposed || !wardrobe) return
+        change(wardrobe)
+        render()
+        notify()
+    }
+    resize()
+    notify()
+    const ready = installModel()
+    function downloadSource() {
+        if (!model || !state.ready || state.wardrobeLoading) throw new Error('Model is not ready for download')
+        const json = model.parser.json
+        const owned = new Set<number>(Object.values(wardrobe?.profile.parts ?? {}).flatMap(part => part.meshes))
+        const equipped = new Set<number>(Object.values(wardrobe?.snapshot() ?? {}).flatMap(id => wardrobe!.profile.parts[id].meshes))
+        // Snapshot the outfit, not whichever eyes/props happen to be visible mid-animation.
+        const visible = new Set<number>(json.nodes.flatMap((node: any, index: number) => {
+            if (node.mesh === undefined) return []
+            const native = node.extras?.atpNativeMeshIndex
+            const shown = owned.has(native) ? equipped.has(native)
+                : node.extras?.atpDefaultVisible ?? json.scenes[json.scene ?? 0].nodes.includes(index)
+            return shown ? [index] : []
+        }))
+        return {model, visible}
+    }
+    return {ready, play, seek, setLoop, replay, reset, setFree, dispose, snapshot, openWardrobe, downloadSource,
+        get wardrobe() { return wardrobe?.profile },
+        selectPart: (id: string) => changeWardrobe(value => value.selectPart(id)),
+    }
 }

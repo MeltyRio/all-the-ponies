@@ -2,10 +2,12 @@
 
 This draft adds an optional entry to the existing pony, pet and costume detail pages. It reuses
 ATP's `ObjectPage` action slot, translated object name, `DialogComponent`, buttons,
-asset URL resolver and i18n. It does not add a parallel website or a downloader.
+asset URL resolver and i18n. GLB downloads use the current appearance and bake
+selected animations on the client.
 No catalogue entry means no 3D button. Existing inventory/variant controls are
 unchanged. Each page looks up its object ID in the same catalogue; a costume
-entry represents a verified, complete outfit model, not an interactive wardrobe.
+entry represents a verified, complete outfit model. Pony entries may also provide
+an optional, owner-specific wardrobe bundle.
 
 ## Run the demo with game models
 
@@ -24,7 +26,7 @@ cd atp-3d-review
 Use Node.js 22.12 or newer and pnpm 10.28.2. First obtain a completed local
 output from that game-data branch. It must contain
 `models_3d.json` and every referenced file under `models/3d/`. Existing upstream
-outputs without the new catalogue cannot provide 3D models. Game resources are
+outputs without the new catalogue cannot provide 3D models. Model and animation resources are
 not included in either PR; the demo reads resources you have generated locally.
 If you already have that output, you do not need Python, ARK files or an APK to
 run the viewer. Otherwise follow the producer's
@@ -55,11 +57,22 @@ http://127.0.0.1:5195/?identity=Pony_Twilight_Sparkle
 The selected entry must exist in that catalogue. Animation buttons play its
 supported clips once, then restore rest. Every valid clip in the verified native
 library is considered; actions that need unsupported events remain excluded with
-a producer diagnostic. Object-declared preferred clips stay first and use bold
-text and a light edge in the list. The lock switches horizontal/free
-rotation, and Reset restores the view and pose. Supported additional actors and
+a producer diagnostic. Catalogue-preferred non-generic actions appear first,
+followed by name order, with bold text. Number and direction
+variants share collapsible menus styled with ATP's sidebar component; every
+original clip remains independently playable. Flight variants stay separate.
+The lock switches horizontal/free rotation, and Reset restores the view and pose. Supported additional actors and
 native materials load with the selected resource; they do not need separate demo
-switches. The demo does not add unsupported game events or interactive clothing.
+switches. If the pony has a wardrobe bundle, expand **Wardrobe** to load its
+parts. Browse the vertically scrolling outfit grid below the model. Selecting
+an outfit replaces that grid with its head, body and available tail parts on a
+single scroll background in the same bounded area. Select individual parts;
+the round back control restores the grid, its scroll position and the focused card.
+Cards use the native set-card background and ATP's outfit names, bonuses and
+part thumbnails. Only declared parts are shown. Pony pages preserve the owner's
+native costume-array order; model-only demos use the bundle's set order.
+Browsing an outfit keeps the current mix. The demo uses native IDs when the
+full ATP game-data labels and thumbnails are unavailable.
 
 For a first check, select `Pony_Twilight_Sparkle`, open the 3D viewer and click
 `gen_idle_00` if listed. The model starts at rest; parent animations do not
@@ -109,10 +122,32 @@ This command does not request uploads. Point `MODEL_VIEWER_ASSETS` at the result
 
 If an expected identity is absent, inspect `isolated-raw/model-associations.json`
 (`generation.excluded` and `identities[ObjectID]`) for its actual dependency or
-support diagnostic. If the viewer reports a missing file or integrity error,
+support diagnostic. If the viewer reports a missing file or format error,
 check that the catalogue and the entire referenced `models/3d/` tree came from
 the same completed build, then restart the demo. Do not rename another model to
 the missing ID or combine a new catalogue with old GLBs.
+
+## Wardrobe
+
+The pony viewer loads `model.wardrobe` only when its controls are opened. This
+optional schema-4 asset uses the existing hash resource path and the same rig and
+shared animation references as the normal model. Old catalogues without it keep
+working; costume pages retain their pre-generated complete previews.
+
+The bundle's `atpWardrobe` extras contain owner-local sets, three default part IDs,
+and each part's slot, native mesh indices and optional linked part. Selection
+uses the native Body/Mane/Tail order and LinkedPart cleanup. An undeclared set
+slot stays unchanged; an explicit part with no mesh is a valid empty appearance.
+Only directly declared parts become buttons. The alternative-context-only
+`SET_TW_6` remains a standalone preview, outside the ordinary Twilight wardrobe.
+
+Once the wardrobe is loaded, changing clothing preserves the current action,
+its playback position and native events. The initial bundle replacement still
+stops the current action. Animations, blinking and Reset view retain the selected clothing. Default
+parts remain available from the native default outfit. Supported additional actors keep
+their existing animation and follow the replacement owner model. This is a
+visual preview without cross-character clothing or crafting; the download uses
+the currently selected mix.
 
 ## Tests
 
@@ -122,8 +157,7 @@ The Node unit tests use small self-authored in-memory data and need no game asse
 pnpm test:model-viewer
 ```
 
-With the same real output selected above, check the GLB format and resource
-integrity:
+With the same real output selected above, check the referenced GLBs against the glTF format:
 
 ```sh
 pnpm test:model-viewer:glb "$MODEL_VIEWER_ASSETS"
@@ -158,25 +192,25 @@ Its existing sync process validates the catalogue's local references, uploads
 referenced GLBs first, then the catalogue, and finally the root manifest. The
 manifest records the hash of the **uploaded, reserialized** catalogue JSON.
 The viewer does not compare those JSON bytes to a pre-upload digest. Each GLB
-still has a checked byte count, SHA-256 and rig compatibility metadata.
+has a checked byte count and rig compatibility metadata; its SHA-256 identifies
+the generated asset without being recomputed in the browser.
 Embedded textures and buffers prevent hidden external GLB dependencies.
 
 Fixed model keys use `Cache-Control: no-cache` and the viewer requests cache
 revalidation. Immutable animation and anonymous model keys retain normal caching.
 Publishing is not atomic: a failed upload can replace some model files while
 leaving the previous catalogue. An old catalogue may then fail its size or
-digest check. After publication finishes, reloading the page reads the latest
-catalogue and resources. The viewer does not silently accept mismatched bytes,
-automatically retry indefinitely, or promise historical model snapshots.
+rig check. After publication finishes, reloading the page reads the latest
+catalogue and resources. The viewer does not provide historical model snapshots
+or automatically retry failed loads.
 Retention and eventual deletion of old immutable GLBs remain an upstream
 operational decision. ATP adds no upload,
-cleanup, downloader, game-object resolver or native parser.
+cleanup, native-resource downloader, game-object resolver or native parser.
 Production R2/CDN delivery and cache behavior have not been accepted by these tests.
 
-Deploy this compatible reader before publishing catalogues with named keys.
-An older reader that only accepts flat SHA keys cannot consume the new paths;
-retaining old files alone does not update that JavaScript. No public rollout is
-performed by these local candidates.
+The initial production release uses `eventBinding` version 2. Coordinate the
+first release of this viewer with the matching game-data producer: make the
+viewer available before publishing its first v2 catalogue and referenced assets.
 
 The catalogue is fetched on client mount with `credentials: omit`; Three.js and
 WebGL initialize only after opening the viewer. Relative keys are resolved with
@@ -188,9 +222,8 @@ owned by ATP.
 The reader accepts catalogue versions 1, 2, 3 and 4. Version 2 is required for an
 additional actor or a native material UV clock; a plain catalogue remains version
 1. Version 3 adds the optional native interaction profile below. Version 4 adds
-per-model animation event bindings alongside reusable skeletal GLBs. Deploy this
-reader before publishing schema-4 data: older clients reject it instead of
-silently omitting required interaction behavior.
+per-model animation event bindings alongside reusable skeletal GLBs. The initial
+production contract uses version 2 of these bindings.
 The same upload reference checks include the additional actor's model and clips.
 
 Schema 4 can store shared animation references once in the optional top-level
@@ -217,9 +250,8 @@ structures plus small extras:
   key derived from the explicitly selected native animation library content.
 - `atpClip`: native FPS, frame count and duration; optional `nativeSampling`
   version 1 references FLOAT VEC3 positions and VEC4 raw XYZW quaternion
-  accessors in frame-major, joint-major order. Optional `eventProfile: "ponybook-v1"`
-  carries ordered native records in older standalone exports. Normal schema-4
-  output keeps model-specific events in catalogue animation `eventBinding` entries.
+  accessors in frame-major, joint-major order. Model-specific callbacks and
+  visibility curves live in catalogue animation `eventBinding` entries.
 - `atpInteractions`: model-side native eye and SubObject mesh indices, hidden
   node indices and any embedded finite emitter definitions/textures. Nodes outside the
   default scene are loaded explicitly with the same skeleton; their declared
@@ -348,13 +380,13 @@ are described in game-data's `docs/3d-resource-associations.md`.
 
 This is a basic playback consumer. Native source discovery and default/outfit
 selection belong to game-data; a missing catalogue identity yields no button.
-Interactive clothing assembly, recursive companions, general native event
+Full creator packages, recursive companions, general native event
 execution, task scenes and character-family action sorting are outside the viewer. One explicitly declared additional actor is supported as described above.
 Only the versioned parent EyeSet/SubObject/finite-emitter profile described here executes.
 Unknown events, unresolved event dependencies and eventful independent companions
 are rejected rather than silently rendered without their behavior. In addition to ordinary materials,
-game-data recognizes reviewed native horn and hair shaders by their exact source
-content: the inactive horn surface is represented by an alpha mask, and hair uses
+game-data recognizes native horn and hair shaders by their declared shader
+and supported controller: the inactive horn surface is represented by an alpha mask, and hair uses
 the verified UV clock. Unknown shader/controller combinations still fail; this
 is not general native shader execution. Future formats require investigation and
 tests. Standard glTF validation cannot prove native-game visual equivalence.
@@ -368,42 +400,51 @@ The small GLB extras profile remains a review point for this Draft PR. Generatio
 is owned by game-data. No new registry package, independent Luna Kit PR or
 resource hosting system is added. This source is GPL-3.0-only like
 ATP; Luna Kit is GPL-3.0, Three.js is MIT, NumPy is BSD and Pillow is MIT-CMU.
-Third-party code and game assets are not vendored.
+Third-party code and model/animation resources are not vendored. The native
+wardrobe scroll is a regular static UI asset at
+`src/assets/images/ui/native-wardrobe-set-card.png`, referenced by component CSS
+and bundled by Vite alongside ATP’s existing game-derived UI artwork. It is never
+extracted during a build or fetched from the model catalogue.
+
+The viewer's lock and export controls use ATP's `button-circle button-blue`
+classes at the same 2rem diameter as the Back button. `ui/icons/download-icon.png`
+is the white foreground layer from PonyBook's `MoveToInventiryBtn` (shape 297),
+with transparent margins trimmed; the native blue background is excluded. It
+uses the same static image reference pattern as ATP's other button icons.
 
 
 ### Native SubObject visibility and shared clips
 
-The normal producer keeps skeletal animation GLBs reusable across models. A
-schema-4 catalogue animation can carry `eventBinding: {version: 1, events: [...]}` with
-that model's resolved EyeSet, Emitter and SubObject records. SubObject records
-have `{frame, type: "SubObject", meshes: [nativeMeshIndex, ...], visible: boolean}`.
-The model's `extras.atpInteractions.subObjects` lists the permitted mesh indices;
-its node extras identify actual native meshes and their default visibility.
-Hidden event-controlled nodes are retained outside the default glTF scene and
-attached by ATP before binding. Generic glTF readers still show the static pose.
+game-data keeps skeletal animation GLBs reusable across models. Both cached and
+uncached conversion emit model-specific `eventBinding: {version: 2, events: [...],
+visibility: [...]}` on each event-bearing catalogue animation reference. `events`
+contains EyeSet expression/blink settings and finite Emitter callbacks. The
+`visibility` array follows this shape:
 
-Targets come from the exact native model tag, SubObject ID and mesh name. Missing
-or ambiguous targets exclude the whole affected action; the producer never
-substitutes another model's prop. The reader requires retained mesh nodes for all
-indices and rejects unknown event types or competing catalogue and embedded event
-sources. Older GLBs with embedded `ponybook-v1` events continue to work when no
-catalogue binding is present (schema 3 remains supported). Schema 4 is mandatory
-for catalogue bindings so older readers reject the new contract instead of
-playing event-free skeletal motion. STEP and native transform interpolation are unchanged.
+```json
+[{"meshName": "wings", "times": [0, 1.5, 3], "values": [false, true, false]}]
+```
 
-ATP builds runtime-only `BooleanKeyframeTrack`s targeting each resolved mesh
-UUID's `.visible` property. Per-track Float64 times retain exact native frame/fps
-boundaries, and the clip duration uses native frameCount/fps. The tracks begin
-with the model default, folding frame-zero and same-time writes in source order.
-No visibility channels are added to glTF and the catalogue contract is unchanged.
+The producer resolves native SubObject and EyeSet writes against the retained
+model. `meshName` is the original mesh name, `times` are seconds (`frame / fps`),
+and `values` are booleans. Curves start at the model default and fold frame-zero
+and same-time writes in native source order. Later keys are retained even when
+their value repeats, because a native write also ends a procedural blink override.
 
-SubObject records leave the callback stream after binding. When a SubObject
-shares an eye mesh, its track also folds EyeSet writes in source order. The eye
-controller keeps expression and blink timing, but only the mixer writes that
-mesh's visibility. A blink supplies a track override until the next visibility
-key; seeks and loops clear it before sampling. The native blink timer/phase is
-retained, as with the previous reset behavior. Untracked eyes and finite emitters
-continue through their existing controllers.
+ATP directly consumes these curves for both preview and download. At load time
+it creates runtime-only `BooleanKeyframeTrack`s targeting the resolved object's
+UUID `.visible` property. Float64 times retain exact native boundaries. Hidden
+eye/prop nodes are attached before binding; generic readers of the source model
+still see its static pose. No event-to-curve conversion runs in the frontend.
+Animation GLBs contain skeletal data; model-specific visibility and callbacks
+are carried by the catalogue binding.
+
+The eye controller keeps expression and blink timing, while the mixer writes
+tracked eye visibility. A blink supplies a track override until the next native
+visibility key; seeks and loops clear it before sampling. Untracked eyes and
+finite emitters retain their existing controllers. STEP and native transform
+interpolation are unchanged; loading no longer recomputes every source pose for
+comparison with the standard animation channels.
 
 Restart, Reset, animation changes and returning to rest restore default meshes.
 The runtime controller provides `seek(seconds)`, `setLoop(boolean)` and `replay()`;
@@ -414,5 +455,123 @@ restores defaults after mixer evaluation while preserving the finite effect tail
 Late emitter events initialize at their original event time and advance by their
 elapsed age; already-expired events allocate no particle instance. On-time events
 retain native emission on the first positive update.
-`preferredAnimations` is an optional model-level list of exported animation IDs,
-used only to mark the original native preferred choices in the complete menu.
+`preferredAnimations` is an optional model-level list of exported animation IDs.
+Its non-generic entries are promoted and marked in the menu without changing
+which clips are available.
+
+
+## Client-side GLB download
+
+The square download icon at the preview's bottom right enters a temporary export
+selection mode. The lock remains at the top right. Normal viewing hides all export
+selection controls. Export mode reuses the animation list and its collapsible
+groups, with the standard inventory-style green plus/red minus buttons. Selecting
+an animation does not play it; clicking its name still previews it. Group and
+Select All controls operate on the complete stable-ID collection, including
+collapsed groups. A partial group shows a green plus without clearing its children.
+
+The Export button snapshots the currently equipped appearance and selected clip IDs.
+With no selected animations it downloads a model-only file; otherwise each
+selected ID becomes a separate named glTF animation in one self-contained GLB.
+Cancel or successful export clears this temporary selection and returns to normal
+viewing without changing the pose, outfit or expanded animation groups. Cancel
+and closing the viewer abort pending work. Opening another identity starts fresh.
+Export errors remain visible for retry. No explanatory disclosure is shown in
+the viewer. The title is plain ATP blue text with compact top spacing; the
+wardrobe back control appears only while the wardrobe is open on outfit parts.
+
+The exporter is lazy-loaded on final confirmation. It reuses validated source
+JSON and binary data, including original embedded textures, rather than serializing
+the live renderer. Unused wardrobe nodes and unreferenced vertices are omitted;
+shared geometry attributes, textures and animation samplers are reused. Pony
+pages export the current mixed outfit. Individual costume pages export their
+existing complete appearance. No production GLB, catalogue or producer contract
+changes are needed. The exporter retains source image bytes and material alpha
+modes, independently of live renderer resource disposal.
+
+Native custom skeletal interpolation is sampled once per pose at 60 Hz into
+standard translation/rotation tracks; existing ordinary STEP tracks remain STEP.
+Preview and export consume the same producer-generated `{meshName, times, values}`
+array. Export resolves original mesh names to glTF nodes and retains those names
+without numeric suffixes. Preview binds named curves to actual scene objects and
+uses discrete Boolean tracks, with a procedural blink override for eye meshes.
+
+Explicit native SubObject and EyeSet writes become standard STEP scale channels
+at their frame/fps boundaries (subject to glTF Float32 timestamp precision).
+Independently controlled skinned meshes use private joint branches so hiding a
+prop or eye never scales the shared body skeleton. Visibility scales target
+ordinary parent nodes. Branches reuse the same skeletal animation samplers.
+Every clip writes each included branch's initial visibility to avoid state
+leaking from another clip. The source coordinate-root rotation is retained.
+A shared nonzero skeleton root supports Blender import even when a part starts
+hidden. No converter-specific hold keys or coordinate-root baking are applied.
+
+This preserves supported native eye expressions and clip-specific eye changes.
+It does not synthesize random/procedural blinking, particles, additional actors,
+scripted events or native shader/UV clocks. Those effects remain preview features.
+Original textures, alpha modes and KHR_materials_unlit are retained without
+converting unlit surfaces to emissive PBR materials for a particular importer.
+Single-sided materials, including inverted hull outlines, require the importing
+renderer to honor glTF backface culling. Blender Material Preview/EEVEE does;
+Cycles does not reproduce that culling automatically and may need material setup.
+The GLB does not require an ATP runtime or Blender add-on.
+
+Focused checks cover selection semantics and native visibility boundaries.
+Representative real Applejack mixed-outfit model-only, single-clip and three-clip
+exports were loaded independently with Three.js and validated by Khronos with
+zero errors/warnings. Blender 5.2.2 imported the three-clip file with separate
+Actions, a usable armature, costume skinning and native prop/eye transitions.
+Local browser interaction checks cover entry/cancel/success, keyboard focus,
+selection versus playback, current outfit and independent costume downloads,
+and desktop/390px layouts. These are representative checks, not a claim that all
+models, large selections or physical mobile browsers have been tested.
+
+References: [Three.js GLTFExporter](https://threejs.org/docs/pages/GLTFExporter.html)
+for explicit animation selection and binary export, and the
+[glTF 2.0 specification](https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html)
+for supported animation targets, STEP interpolation and skin transforms. A small
+source-data writer is used here to preserve original texture bytes and avoid
+losing ATP's native interpolants through generic scene serialization. No new
+package or copied third-party implementation is introduced. No Blender-specific extension is required for this download flow.
+
+
+GLB does not store Blender's Object Mode, viewport shading or scene colour
+management. Those settings belong to a .blend file. Blender's importer maps
+alphaMode BLEND to its Blended surface method, which can cause sorting artifacts
+when opaque skin and transparent glass share a mesh. Spike and Coiffed comparisons
+confirmed that Dithered restores the texture appearance without changing the GLB.
+Blender also activates the first imported action above its stashed NLA tracks;
+select the intended action or solo its NLA track to preview another clip. The user
+confirmed Coiffed's appearance and animations after these Blender-side adjustments. The exporter does not embed Blender-specific setup or
+Apple GLB-to-USD workarounds.
+
+
+### Resource processing and review boundary
+
+The catalogue is validated when resolving an identity, including allowed asset
+keys. GLB loads check the response size and format, then reject external buffers
+or images before invoking the loader. Native animation
+timing and rig compatibility are checked in `bindAnimation`; the playback
+controller reuses that result instead of checking duration again.
+
+Playback keeps bound clips only for the current model. Export owns its temporary
+animation resources and releases them after baking. A representative two-clip
+local measurement put each fetch/parse and binding step at roughly 4–5 ms, so
+there is no additional persistent cache or export/preview shared ownership layer.
+The exporter packs its existing chunks directly into the final GLB, avoiding an
+extra full binary-buffer allocation and copy. These are local measurements, not
+network or mobile performance guarantees.
+
+### Native component skin weights
+
+Game-data emits `_NATIVE_JOINTS` and `_NATIVE_WEIGHTS` with the original four RK
+influences. `JOINTS_0` / `WEIGHTS_0` are a separate normalized glTF carrier. After
+GLTFLoader parses a model, ATP restores the custom pair for the existing CPU/GPU
+skinning. This also applies to wardrobe bundles and additional actors; animation
+and visibility binding do not change. No custom shader or version gate is needed.
+
+Downloads preserve these custom attributes together with standard glTF weights.
+Ordinary Blender/glTF importers use the standard weights, so non-unit native
+weights can deform differently. Coiffed's ten affected vertices showed no
+meaningful visual issue in the user's Blender review. The native pair and valid
+standard GLB representation remain; no importer-specific correction is added.

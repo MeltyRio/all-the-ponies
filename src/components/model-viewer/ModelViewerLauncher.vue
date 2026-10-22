@@ -50,7 +50,7 @@ function open() {
             @click="open"
         >3D</button>
         <DialogComponent ref="model-dialog" :title="props.name" has-close-button @close="visible = false">
-            <ModelViewer v-if="visible && model" :model="model" />
+            <ModelViewer v-if="visible && model" :model="model" :identity="props.identity" />
         </DialogComponent>
     </div>
 </template>
