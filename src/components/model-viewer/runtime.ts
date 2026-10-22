@@ -4,7 +4,7 @@ import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { bindAnimation, jointObjects, rigMetadata, type BoundAnimation } from './animation';
 import { disposeGLTF, loadGLB, type AnimationRef, type ModelRef } from './assets';
 import { loadAdditionalActor, type AdditionalActor } from './additional';
-import { applyNativeDepth, nativeUVClock } from './native-materials';
+import { applyNativeDepth, nativeTransparentSort, nativeUVClock } from './native-materials';
 import { hitsModel, nativeEventPlayback, nativeGestures, prepareNativeEyes } from './interactions';
 import { createNativeEmitters } from './emitter';
 import { prepareWardrobe } from './wardrobe';
@@ -48,6 +48,7 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
     const scene = new THREE.Scene()
     const camera = new THREE.PerspectiveCamera(35, 1, .01, 1000)
     const renderer = new THREE.WebGLRenderer({antialias: true, alpha: true})
+    renderer.setTransparentSort(nativeTransparentSort)
     renderer.setPixelRatio(Math.min(devicePixelRatio || 1, 2))
     const canvas = renderer.domElement
     canvas.tabIndex = 0

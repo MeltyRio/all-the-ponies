@@ -1,4 +1,5 @@
-import { Mesh, Texture } from 'three'
+import { Mesh, SkinnedMesh, Texture } from 'three'
+import type { RenderItem } from 'three'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
 export function applyNativeDepth(model: GLTF) {
@@ -14,6 +15,24 @@ export function applyNativeDepth(model: GLTF) {
             material.depthTest = depth.test
         }
     })
+}
+
+/** Preserve Three's transparent sort, using native submission order only at a tied depth. */
+export function nativeTransparentSort(a: RenderItem, b: RenderItem) {
+    if (a.groupOrder !== b.groupOrder) return a.groupOrder - b.groupOrder
+    if (a.renderOrder !== b.renderOrder) return a.renderOrder - b.renderOrder
+    if (a.z !== b.z) return b.z - a.z
+    const left = a.object, right = b.object
+    if (a.material.transparent && b.material.transparent
+        && left instanceof SkinnedMesh && right instanceof SkinnedMesh
+        && left.skeleton && left.skeleton === right.skeleton) {
+        const leftIndex = left.userData.atpNativeMeshIndex
+        const rightIndex = right.userData.atpNativeMeshIndex
+        if (Number.isInteger(leftIndex) && Number.isInteger(rightIndex) && leftIndex !== rightIndex) {
+            return rightIndex - leftIndex
+        }
+    }
+    return a.id - b.id
 }
 
 /** The native Pony controller shares one CPU clock across its hair materials. */

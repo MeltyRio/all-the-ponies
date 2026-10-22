@@ -5,6 +5,7 @@ import { runInNewContext } from 'node:vm'
 import ts from 'typescript'
 import * as THREE from 'three'
 import { bindAnimation as bindNativeAnimation } from '../../src/components/model-viewer/animation'
+import { nativeTransparentSort } from '../../src/components/model-viewer/native-materials'
 import { prepareWardrobe } from '../../src/components/model-viewer/wardrobe'
 import { nativeEventPlayback, nativeGestures, prepareNativeEyes as prepareEyes } from '../../src/components/model-viewer/interactions'
 
@@ -102,6 +103,7 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
     class Renderer {
         domElement = canvas
         setPixelRatio() {}
+        setTransparentSort() {}
         setSize() {}
         render() {
             renders.push({ parent: parent.bone.position.toArray(), childMatrix: child.scene.parent?.matrix.toArray() })
@@ -170,6 +172,7 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         jointObjects(value: typeof parent) { return new Map([[1, value.bone]]) },
         checkAdditionalActor() {},
         applyNativeDepth() {},
+        nativeTransparentSort,
         nativeUVClock() { return { active: false, update() {}, snapshot() { return undefined } } },
         nativeEventPlayback, nativeGestures,
         prepareWardrobe,
