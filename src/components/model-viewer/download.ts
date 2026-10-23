@@ -118,6 +118,7 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
     // across every outfit, so simply deleting mesh nodes would retain unused clothing.
     const geometryGroups = new Map<string, {attributes: Record<string, number>, vertices: Map<number, number>, primitives: {primitive: Json, output: Json}[]}>()
     const materialMap = new Map<number, number>(), textureMap = new Map<number, number>(), imageMap = new Map<number, number>(), samplerMap = new Map<number, number>()
+    const vertexAlphaMaterials = new Set<number>()
     function texture(index: number) {
         if (textureMap.has(index)) return textureMap.get(index)!
         const row = structuredClone(source.textures[index]), result = out.textures.length
@@ -166,7 +167,10 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
             const group = geometryGroups.get(key)!, original = structuredClone(primitive)
             for (const index of sourceArray(original.indices)) if (!group.vertices.has(index)) group.vertices.set(index, group.vertices.size)
             group.primitives.push({primitive: original, output: primitive})
-            if (primitive.material !== undefined) primitive.material = material(primitive.material)
+            if (primitive.material !== undefined) {
+                if (source.accessors[primitive.attributes.COLOR_0]?.type === 'VEC4') vertexAlphaMaterials.add(primitive.material)
+                primitive.material = material(primitive.material)
+            }
             delete primitive.extras
         }
     }
@@ -184,6 +188,42 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
             output.attributes = attributes
             output.indices = accessor(new Type(Array.from(sourceArray(primitive.indices), (id: number) => group.vertices.get(id)!)), 'SCALAR', Type === Uint32Array ? 5125 : 5123)
         }
+    }
+    // Classify only download copies. Mixed atlases and RGBA vertex colors keep
+    // BLEND; every copied texture still uses the original embedded image bytes.
+    const opaqueImages = new Map<number, boolean>()
+    for (const [original, index] of materialMap) {
+        const row = out.materials[index]
+        if (row.alphaMode !== 'BLEND' || (row.pbrMetallicRoughness?.baseColorFactor?.[3] ?? 1) !== 1
+            || vertexAlphaMaterials.has(original)) continue
+        const textureIndex = source.materials[original].pbrMetallicRoughness?.baseColorTexture?.index
+        if (textureIndex !== undefined) {
+            const imageIndex = source.textures[textureIndex].source
+            if (!opaqueImages.has(imageIndex)) {
+                const image = source.images[imageIndex], view = source.bufferViews[image.bufferView]
+                const bytes = new Uint8Array(binary, view.byteOffset ?? 0, view.byteLength)
+                // Preview may dispose its ImageBitmap while animations are loading.
+                // Decode our embedded source bytes and own this bitmap's lifetime.
+                let bitmap: ImageBitmap | undefined
+                let opaque = false
+                try {
+                    bitmap = await createImageBitmap(new Blob([bytes], {type: image.mimeType}), {premultiplyAlpha: 'none'})
+                    const canvas = document.createElement('canvas')
+                    canvas.width = bitmap.width; canvas.height = bitmap.height
+                    const context = canvas.getContext('2d')!
+                    context.drawImage(bitmap, 0, 0)
+                    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data
+                    opaque = true
+                    for (let i = 3; i < pixels.length; i += 4) if (pixels[i] !== 255) { opaque = false; break }
+                } catch {
+                    // An unreadable image cannot establish opacity; keep BLEND.
+                } finally { bitmap?.close() }
+                signal.throwIfAborted()
+                opaqueImages.set(imageIndex, opaque)
+            }
+            if (!opaqueImages.get(imageIndex)) continue
+        }
+        row.alphaMode = 'OPAQUE'
     }
     // Each independently visible skinned part receives a private skeleton branch.
     // Scaling the branch collapses all its triangles, while its mesh stays outside

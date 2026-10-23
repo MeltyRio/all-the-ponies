@@ -114,3 +114,111 @@ test('viewer uses standard weights while client download preserves native attrib
         assert.ok(attrs._NATIVE_JOINTS !== undefined && attrs.WEIGHTS_0 !== undefined)
     } finally {globalThis.fetch = fetch; if (model) disposeGLTF(model)}
 })
+
+function exportFixture() {
+    const json: any = {asset: {version: '2.0'}, scene: 0, scenes: [{nodes: [0, 2]}],
+        nodes: [{name: 'Root', children: [1]}, {name: 'Joint'}, {mesh: 0, skin: 0}],
+        meshes: [], skins: [{joints: [1], skeleton: 0}], accessors: [], bufferViews: [], buffers: [],
+        extras: {atpRig: {version: 1, key: 'a'.repeat(64), parents: [-1], jointNodes: [1],
+            coordinateSystem: 'native-Y-down-to-glTF-Y-up-RxPi'}}}
+    const chunks: Uint8Array[] = []
+    let length = 0
+    function bytes(value: Uint8Array) {
+        const padding = (4 - length % 4) % 4
+        if (padding) { chunks.push(new Uint8Array(padding)); length += padding }
+        const index = json.bufferViews.length
+        json.bufferViews.push({buffer: 0, byteOffset: length, byteLength: value.length})
+        chunks.push(value); length += value.length
+        return index
+    }
+    function attribute(value: Float32Array | Uint16Array, type: string, width: number) {
+        json.accessors.push({bufferView: bytes(new Uint8Array(value.buffer)),
+            componentType: value instanceof Float32Array ? 5126 : 5123, count: value.length / width, type})
+        return json.accessors.length - 1
+    }
+    const position = attribute(new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1]), 'VEC3', 3)
+    Object.assign(json.accessors[position], {min: [0, 0, 0], max: [1, 1, 1]})
+    const attributes = {POSITION: position, JOINTS_0: attribute(new Uint16Array(12), 'VEC4', 4),
+        WEIGHTS_0: attribute(new Float32Array([1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0]), 'VEC4', 4)}
+    const indices = attribute(new Uint16Array([0, 1, 2]), 'SCALAR', 1)
+    json.meshes.push({name: 'body', primitives: [{attributes, indices}]})
+    json.skins[0].inverseBindMatrices = attribute(new Float32Array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]), 'MAT4', 16)
+    function binary() {
+        const result = new Uint8Array(Math.ceil(length / 4) * 4)
+        let offset = 0
+        for (const chunk of chunks) { result.set(chunk, offset); offset += chunk.length }
+        return result
+    }
+    function glb() {
+        const bin = binary()
+        json.buffers = [{byteLength: bin.length}]
+        const text = new TextEncoder().encode(JSON.stringify(json)), size = Math.ceil(text.length / 4) * 4
+        const data = new ArrayBuffer(28 + size + bin.length), view = new DataView(data), output = new Uint8Array(data)
+        view.setUint32(0, 0x46546c67, true); view.setUint32(4, 2, true); view.setUint32(8, data.byteLength, true)
+        view.setUint32(12, size, true); view.setUint32(16, 0x4e4f534a, true)
+        output.fill(32, 20, 20 + size); output.set(text, 20)
+        view.setUint32(20 + size, bin.length, true); view.setUint32(24 + size, 0x004e4942, true)
+        output.set(bin, 28 + size)
+        return data
+    }
+    function model() {
+        const scene = new Scene(), root = new Object3D(), joint = new Object3D()
+        root.add(joint); scene.add(root)
+        return {scene, scenes: [scene], animations: [], parser: {json,
+            associations: new Map([[root, {nodes: 0}], [joint, {nodes: 1}]]),
+            getDependency: async (type: string, index: number) => {
+                assert.equal(type, 'buffer', 'export must not read a preview texture that may already be disposed')
+                assert.equal(index, 0)
+                return binary().buffer
+            },
+        }} as unknown as GLTF
+    }
+    return {json, bytes, attribute, glb, model}
+}
+
+function exportedJson(bytes: ArrayBuffer) {
+    const size = new DataView(bytes).getUint32(12, true)
+    return JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, 20, size)))
+}
+
+test('download checks embedded image alpha independently and preserves genuine transparency', async () => {
+    const f = exportFixture(), originalPrimitive = f.json.meshes[0].primitives[0]
+    f.json.images = [255, 128].map(alpha => ({mimeType: 'image/png', bufferView: f.bytes(new Uint8Array([alpha]))}))
+    f.json.textures = [{source: 0}, {source: 1}]
+    f.json.materials = [0, 0, 1, 0, 0, 0].map(index => ({alphaMode: 'BLEND', pbrMetallicRoughness: {baseColorTexture: {index}}}))
+    f.json.materials[3].alphaMode = 'MASK'; f.json.materials[3].alphaCutoff = .4
+    f.json.materials[4].pbrMetallicRoughness.baseColorFactor = [1, 1, 1, .5]
+    const color = f.attribute(new Float32Array([1, 1, 1, .5, 1, 1, 1, 1, 1, 1, 1, 1]), 'VEC4', 4)
+    f.json.meshes[0].primitives = f.json.materials.map((_: unknown, material: number) => ({
+        ...structuredClone(originalPrimitive), material,
+        attributes: {...originalPrimitive.attributes, ...(material === 5 ? {COLOR_0: color} : {})},
+    }))
+    const before = structuredClone(f.json), decoded: {alpha: number, width: number, height: number, closed: boolean, close(): void}[] = []
+    const savedBitmap = globalThis.createImageBitmap, savedDocument = globalThis.document
+    globalThis.createImageBitmap = (async (blob: Blob) => {
+        const image = {alpha: new Uint8Array(await blob.arrayBuffer())[0], width: 1, height: 1, closed: false,
+            close() { this.closed = true }}
+        decoded.push(image)
+        return image
+    }) as typeof createImageBitmap
+    globalThis.document = {createElement: () => {
+        let drawn: typeof decoded[number]
+        return {width: 0, height: 0, getContext: () => ({
+            drawImage(image: typeof decoded[number]) { assert.equal(image.closed, false); drawn = image },
+            getImageData: () => ({data: new Uint8ClampedArray([1, 2, 3, drawn.alpha])}),
+        })}
+    }} as unknown as Document
+    try {
+        const output = exportedJson(await downloadModel(f.model(), new Set([2]), [], new AbortController().signal, () => {}))
+        assert.deepEqual(output.materials.map((material: any) => material.alphaMode), ['OPAQUE', 'OPAQUE', 'BLEND', 'MASK', 'BLEND', 'BLEND'])
+        assert.equal(output.materials[3].alphaCutoff, .4)
+        assert.equal(output.meshes[0].primitives.length, 6, 'no primitive splitting')
+        assert.equal(output.images.length, 2)
+        assert.equal(decoded.length, 2, 'shared images are inspected once')
+        assert.ok(decoded.every(image => image.closed), 'export-owned bitmaps are released')
+        assert.deepEqual(f.json, before, 'source material semantics stay unchanged')
+    } finally {
+        globalThis.createImageBitmap = savedBitmap
+        globalThis.document = savedDocument
+    }
+})

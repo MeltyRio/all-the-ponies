@@ -486,8 +486,11 @@ the live renderer. Unused wardrobe nodes and unreferenced vertices are omitted;
 shared geometry attributes, textures and animation samplers are reused. Pony
 pages export the current mixed outfit. Individual costume pages export their
 existing complete appearance. No production GLB, catalogue or producer contract
-changes are needed. The exporter retains source image bytes and material alpha
-modes, independently of live renderer resource disposal.
+changes are needed. The exporter retains source image bytes. Only download copies of BLEND materials
+with a fully opaque base-color image, unit material alpha and no RGBA vertex colors
+are changed to OPAQUE. Mixed-alpha images and MASK materials retain their semantics.
+Images are decoded from embedded source bytes once per export and released after
+inspection, independently of preview ImageBitmap disposal.
 
 Native custom skeletal interpolation is sampled once per pose at 60 Hz into
 standard translation/rotation tracks; existing ordinary STEP tracks remain STEP.
@@ -509,7 +512,7 @@ hidden. No converter-specific hold keys or coordinate-root baking are applied.
 This preserves supported native eye expressions and clip-specific eye changes.
 It does not synthesize random/procedural blinking, particles, additional actors,
 scripted events or native shader/UV clocks. Those effects remain preview features.
-Original textures, alpha modes and KHR_materials_unlit are retained without
+Original textures, genuine transparency and KHR_materials_unlit are retained without
 converting unlit surfaces to emissive PBR materials for a particular importer.
 Single-sided materials, including inverted hull outlines, require the importing
 renderer to honor glTF backface culling. Blender Material Preview/EEVEE does;
