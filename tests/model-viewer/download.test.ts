@@ -47,7 +47,7 @@ for (const [vertices, componentType] of [[65535, 5123], [65536, 5125], [65537, 5
 }
 
 
-test('native weights survive GLTFLoader normalization and client download', async () => {
+test('viewer uses standard weights while client download preserves native attributes', async () => {
     const json: any = {asset: {version: '2.0'}, scene: 0, scenes: [{nodes: [0, 2]}],
         nodes: [{children: [1]}, {}, {mesh: 0, skin: 0}], skins: [{joints: [1]}],
         meshes: [], accessors: [], bufferViews: [], buffers: [],
@@ -91,13 +91,13 @@ test('native weights survive GLTFLoader normalization and client download', asyn
     try {
         model = await loadGLB({path: 'models/3d/native.glb', bytes: data.byteLength, sha256: 'a'.repeat(64), rigKey: 'a'.repeat(64)}, new AbortController().signal)
         const mesh = model.scene.children.find(object => object instanceof SkinnedMesh) as SkinnedMesh
-        assert.deepEqual(Array.from(mesh.geometry.attributes.skinWeight.array), Array.from(weights))
+        assert.deepEqual(Array.from(mesh.geometry.attributes.skinWeight.array), [1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0])
         mesh.skeleton.bones[0].position.x = 2
         model.scene.updateMatrixWorld(true)
         const point = mesh.applyBoneTransform(0, new Vector3(1, 0, 0))
-        assert.ok(Math.abs(point.x - 3 * weights.slice(0, 4).reduce((a, b) => a + b, 0)) < 1e-6)
+        assert.equal(point.x, 3)
         // Additional-actor placement moves both the rig and mesh. CPU bounds
-        // must agree with GPU skinning when the native weight sum is not one.
+        // must agree with GPU skinning using the normalized standard weights.
         model.scene.position.set(4, 5, 6)
         model.scene.updateMatrixWorld(true)
         const placed = mesh.applyBoneTransform(0, new Vector3(1, 0, 0)).applyMatrix4(mesh.matrixWorld)

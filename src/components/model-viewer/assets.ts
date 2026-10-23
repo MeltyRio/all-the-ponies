@@ -1,4 +1,3 @@
-import { SkinnedMesh, type Vector3, type Vector4 } from 'three'
 import { createAssetUrl } from '../../scripts/assets'
 import type { NativeEvent } from './interactions'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
@@ -227,31 +226,6 @@ export async function loadGLB(ref: AssetRef, signal: AbortSignal): Promise<GLTF>
     const { GLTFLoader } = await import('three/addons/loaders/GLTFLoader.js')
     signal.throwIfAborted()
     const gltf = await new GLTFLoader().parseAsync(bytes, '')
-    // GLTFLoader normalizes WEIGHTS_0. Native RK shaders sum the original
-    // components instead; restore them after loading for both CPU and GPU skinning.
-    gltf.scene.traverse(object => {
-        if (!(object instanceof SkinnedMesh)) return
-        const geometry = object.geometry
-        const joints = geometry.getAttribute('_native_joints'), weights = geometry.getAttribute('_native_weights')
-        if (!joints && !weights) return
-        check(joints?.itemSize === 4 && weights?.itemSize === 4
-            && joints.count === geometry.getAttribute('position').count && weights.count === joints.count,
-            'Invalid native skin attributes')
-        geometry.setAttribute('skinIndex', joints)
-        geometry.setAttribute('skinWeight', weights)
-        object.applyBoneTransform = function<T extends Vector3 | Vector4>(this: SkinnedMesh, index: number, point: T): T {
-            const w = 'w' in point ? point.w : 1
-            SkinnedMesh.prototype.applyBoneTransform.call(this, index, point)
-            // Match the GPU's W=sum(weights) through bindMatrixInverse. Three's
-            // CPU helper restores the input W before this inverse transform.
-            const sum = weights.getX(index) + weights.getY(index) + weights.getZ(index) + weights.getW(index)
-            const inverse = this.bindMatrixInverse.elements, delta = (sum - 1) * w
-            point.x += inverse[12] * delta
-            point.y += inverse[13] * delta
-            point.z += inverse[14] * delta
-            return point
-        }
-    })
     if (signal.aborted) {
         disposeGLTF(gltf)
         signal.throwIfAborted()

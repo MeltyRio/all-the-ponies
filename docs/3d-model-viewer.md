@@ -562,16 +562,16 @@ The exporter packs its existing chunks directly into the final GLB, avoiding an
 extra full binary-buffer allocation and copy. These are local measurements, not
 network or mobile performance guarantees.
 
-### Native component skin weights
+### Skin weights
 
-Game-data emits `_NATIVE_JOINTS` and `_NATIVE_WEIGHTS` with the original four RK
-influences. `JOINTS_0` / `WEIGHTS_0` are a separate normalized glTF carrier. After
-GLTFLoader parses a model, ATP restores the custom pair for the existing CPU/GPU
-skinning. This also applies to wardrobe bundles and additional actors; animation
-and visibility binding do not change. No custom shader or version gate is needed.
+The viewer uses standard `JOINTS_0` and normalized `WEIGHTS_0` for CPU and GPU
+skinning, reusing game-data conversion and GLTFLoader's load-time normalization.
+The same loading path serves pony models, wardrobe bundles and additional actors.
+This avoids deformation artifacts from underweighted native vertices, including
+Coiffed's scarf and hind legs.
 
-Downloads preserve these custom attributes together with standard glTF weights.
-Ordinary Blender/glTF importers use the standard weights, so non-unit native
-weights can deform differently. Coiffed's ten affected vertices showed no
-meaningful visual issue in the user's Blender review. The native pair and valid
-standard GLB representation remain; no importer-specific correction is added.
+Downloads retain the standard weights and, when present, the original
+`_NATIVE_JOINTS` / `_NATIVE_WEIGHTS` attributes. The custom pair does not override
+viewer skinning.
+The converter removes fully collapsed zero-weight triangles before export and
+rejects retained zero-weight vertices rather than inventing bone influences.
