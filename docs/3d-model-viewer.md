@@ -471,8 +471,14 @@ Select All controls operate on the complete stable-ID collection, including
 collapsed groups. A partial group shows a green plus without clearing its children.
 
 The Export button snapshots the currently equipped appearance and selected clip IDs.
-With no selected animations it downloads a model-only file; otherwise each
-selected ID becomes a separate named glTF animation in one self-contained GLB.
+With no selected pony animations it downloads the pony without animation; otherwise
+each selected ID becomes a separate named glTF animation in one self-contained GLB.
+When a companion is available, every download includes its model and complete
+native animation library independently of the pony selection; no extra control is shown.
+Combined downloads name clips `pony/<id>` and `companion/<id>`. Each clip retains
+its own duration and targets only its actor; no combined loops or random playback
+schedule are exported. The companion's fixed placement encloses both its mesh and
+independent skeleton, without following the pony's animated root.
 Cancel or successful export clears this temporary selection and returns to normal
 viewing without changing the pose, outfit or expanded animation groups. Cancel
 and closing the viewer abort pending work. Opening another identity starts fresh.
@@ -510,8 +516,11 @@ A shared nonzero skeleton root supports Blender import even when a part starts
 hidden. No converter-specific hold keys or coordinate-root baking are applied.
 
 This preserves supported native eye expressions and clip-specific eye changes.
-It does not synthesize random/procedural blinking, particles, additional actors,
-scripted events or native shader/UV clocks. Those effects remain preview features.
+It does not synthesize random/procedural blinking, particles, scripted events or
+native shader/UV clocks. Those effects remain preview features. Companion skeletal
+motion uses the same native sampling path as pony clips. Blender imports the
+standard clips as Actions with stashed NLA tracks; users choose the actions to
+play on each armature independently.
 Original textures, genuine transparency and KHR_materials_unlit are retained without
 converting unlit surfaces to emissive PBR materials for a particular importer.
 Single-sided materials, including inverted hull outlines, require the importing

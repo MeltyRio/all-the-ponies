@@ -53,7 +53,8 @@ async function download() {
         const animations = props.model.animations.filter(animation => selectedAnimations.value.has(animation.id))
         const { downloadModel } = await import('./download')
         const bytes = await downloadModel(source.model, source.visible, animations, request.signal,
-            (completed, total) => { exportProgress.value = total ? t('model_viewer.export_progress', {completed, total}) : t('model_viewer.preparing_download') })
+            (completed, total) => { exportProgress.value = total ? t('model_viewer.export_progress', {completed, total}) : t('model_viewer.preparing_download') },
+            props.model.additionalActor)
         request.signal.throwIfAborted()
         const url = URL.createObjectURL(new Blob([bytes], {type: 'model/gltf-binary'}))
         const link = document.createElement('a')

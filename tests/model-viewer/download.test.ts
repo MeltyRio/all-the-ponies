@@ -222,3 +222,53 @@ test('download checks embedded image alpha independently and preserves genuine t
         globalThis.document = savedDocument
     }
 })
+
+test('companion export keeps all native clips separate from pony clips and preserves placement', async () => {
+    const pony = exportFixture(), companionModel = exportFixture(), resources = new Map<string, ArrayBuffer>()
+    function ref(data: ArrayBuffer) {
+        const sha256 = (resources.size + 1).toString(16).repeat(64), path = `models/3d/${sha256}.glb`
+        resources.set(path, data)
+        return {path, sha256, bytes: data.byteLength, rigKey: 'a'.repeat(64)}
+    }
+    function animation(id: string, duration: number) {
+        const f = exportFixture(), times = Float32Array.from({length: duration + 1}, (_, i) => i)
+        const input = f.attribute(times, 'SCALAR', 1)
+        Object.assign(f.json.accessors[input], {min: [0], max: [duration]})
+        const translation = f.attribute(Float32Array.from(Array.from(times).flatMap(time => [time, 0, 0])), 'VEC3', 3)
+        const rotation = f.attribute(Float32Array.from(Array.from(times).flatMap(() => [0, 0, 0, 1])), 'VEC4', 4)
+        f.json.animations = [{name: id, channels: ['translation', 'rotation'].map((path, sampler) => ({sampler, target: {node: 1, path}})),
+            samplers: [translation, rotation].map(output => ({input, output, interpolation: 'STEP'}))}]
+        f.json.extras.atpClip = {fps: 1, frameCount: duration, duration}
+        return {...ref(f.glb()), id, name: id, duration}
+    }
+    const ponyAnimation = animation('idle', 1)
+    const companion = {model: {...ref(companionModel.glb()),
+        animations: [animation('idle', 1), animation('hover', 2)]},
+        transform: [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 4, 5, 6, 1], parentRoot: 0,
+        controller: 'native-first-then-random-v1' as const}
+    const fetch = globalThis.fetch
+    globalThis.fetch = async input => {
+        const path = new URL(String(input)).pathname.replace(/^\//, '')
+        assert.ok(resources.has(path), `unexpected resource ${path}`)
+        return new Response(resources.get(path))
+    }
+    try {
+        const bytes = await downloadModel(pony.model(), new Set([2]), [ponyAnimation], new AbortController().signal, () => {}, companion)
+        const output = exportedJson(bytes)
+        assert.deepEqual(output.animations.map((clip: any) => clip.name), ['pony/idle', 'companion/idle', 'companion/hover'])
+        assert.equal(output.skins.length, 2)
+        assert.notDeepEqual(output.skins[0].joints, output.skins[1].joints)
+        for (const [i, clip] of output.animations.entries()) {
+            const joints = output.skins[i === 0 ? 0 : 1].joints
+            assert.ok(clip.channels.every((channel: any) => joints.includes(channel.target.node)))
+            assert.ok(clip.samplers.every((sampler: any) => output.accessors[sampler.input].max[0] === (i === 2 ? 2 : 1)))
+        }
+        const placed = output.nodes.find((node: any) => node.matrix?.every((value: number, i: number) => value === companion.transform[i]))
+        assert.ok(placed, 'companion placement is retained on its own parent')
+        const descendants = new Set<number>()
+        function visit(id: number) { descendants.add(id); for (const child of output.nodes[id].children ?? []) visit(child) }
+        for (const child of placed.children) visit(child)
+        assert.ok(output.skins[1].joints.every((joint: number) => descendants.has(joint)))
+        assert.ok(output.nodes.every((node: any, id: number) => node.skin !== 1 || descendants.has(id)), 'placement moves both companion mesh and rig')
+    } finally { globalThis.fetch = fetch }
+})
