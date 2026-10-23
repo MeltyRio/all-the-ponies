@@ -275,8 +275,8 @@ For `nativeSampling` version 1, the viewer interpolates the original model-space
 positions linearly and raw quaternions with shortest-path normalized linear
 interpolation, then derives parent-local transforms for the existing Three
 mixer. Quaternion endpoint lengths are retained; normalizing before mixing or
-using parent-local SLERP would change the reviewed native result. Every stored
-pose is checked against the standard tracks before playback. The final frame
+using parent-local SLERP would change the reviewed native result. Tracks share
+one native pose calculation for each mixer time. The final frame
 remains held through the existing clip duration, and completion/Reset behavior
 is unchanged. This does not implement the game's multi-layer animation or queues.
 
@@ -552,7 +552,7 @@ package or copied third-party implementation is introduced. No Blender-specific 
 GLB does not store Blender's Object Mode, viewport shading or scene colour
 management. Those settings belong to a .blend file. Blender's importer maps
 alphaMode BLEND to its Blended surface method, which can cause sorting artifacts
-when opaque skin and transparent glass share a mesh. Spike and Coiffed comparisons
+when opaque surfaces and translucent accessories both use BLEND. Spike and Coiffed comparisons
 confirmed that Dithered restores the texture appearance without changing the GLB.
 Blender also activates the first imported action above its stashed NLA tracks;
 select the intended action or solo its NLA track to preview another clip. The user
