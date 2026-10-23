@@ -462,13 +462,15 @@ which clips are available.
 
 ## Client-side GLB download
 
-The square download icon at the preview's bottom right enters a temporary export
+The circular download icon at the preview's bottom right enters a temporary export
 selection mode. The lock remains at the top right. Normal viewing hides all export
 selection controls. Export mode reuses the animation list and its collapsible
 groups, with the standard inventory-style green plus/red minus buttons. Selecting
 an animation does not play it; clicking its name still previews it. Group and
 Select All controls operate on the complete stable-ID collection, including
 collapsed groups. A partial group shows a green plus without clearing its children.
+The download icon shows a red count badge only when pony animations are selected;
+it counts individual clip IDs, including all children of selected groups.
 
 The Export button snapshots the currently equipped appearance and selected clip IDs.
 With no selected pony animations it downloads the pony without animation; otherwise

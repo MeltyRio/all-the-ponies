@@ -187,6 +187,7 @@ onBeforeUnmount(() => {
                 :aria-label="t('model_viewer.choose_export')" :title="t('model_viewer.choose_export')"
                 @click="exportMode = true">
                 <img class="download-icon" src="@/assets/images/ui/icons/download-icon.png" alt="">
+                <span v-if="selectedAnimations.size" class="export-count button-circle button-red" aria-hidden="true">{{ selectedAnimations.size }}</span>
             </button>
         </div>
         <div class="model-actions">
@@ -335,6 +336,24 @@ onBeforeUnmount(() => {
 }
 .rotation { top: .45rem; }
 .download-entry { bottom: .45rem; }
+.export-count {
+    position: absolute;
+    top: -.2rem;
+    right: -.2rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 1rem;
+    height: 1rem;
+    margin: 0;
+    font-size: .85rem;
+    line-height: 1;
+    background: var(--red);
+    box-shadow: none;
+    text-shadow: none;
+    overflow: visible;
+    pointer-events: none;
+}
 .preview-control svg,
 .preview-control img {
     width: 100%;
