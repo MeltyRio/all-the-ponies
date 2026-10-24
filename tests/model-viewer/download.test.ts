@@ -1,7 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Object3D, Scene, SkinnedMesh, Vector3, Vector4 } from 'three'
-import { loadGLB, disposeGLTF } from '../../src/components/model-viewer/assets'
+import { loadGLB, disposeGLTF, type AnimationRef } from '../../src/components/model-viewer/assets'
+import { prepareNativeEyes } from '../../src/components/model-viewer/interactions'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { downloadModel } from '../../src/components/model-viewer/download'
 
@@ -179,6 +180,77 @@ function exportFixture() {
 function exportedJson(bytes: ArrayBuffer) {
     const size = new DataView(bytes).getUint32(12, true)
     return JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, 20, size)))
+}
+
+for (const duplicateNames of [false, true]) for (const initiallyVisible of [false, true]) {
+    test(`download preserves ${duplicateNames ? 'duplicate' : 'distinct'} named submeshes initially ${initiallyVisible ? 'visible' : 'hidden'}`, async () => {
+        const f = exportFixture(), a = exportFixture(), resources = new Map<string, ArrayBuffer>()
+        function ref(data: ArrayBuffer) {
+            const sha256 = (resources.size + 1).toString(16).repeat(64), path = `models/3d/${sha256}.glb`
+            resources.set(path, data)
+            return {path, sha256, bytes: data.byteLength, rigKey: 'a'.repeat(64)}
+        }
+        const names = duplicateNames ? ['eyes', 'eyes'] : ['eyes_left', 'eyes_right']
+        f.json.nodes[2].extras = {atpNativeMeshIndex: 0, atpDefaultVisible: true}
+        names.forEach((name, i) => {
+            f.json.meshes.push({...structuredClone(f.json.meshes[0]), name})
+            f.json.nodes.push({name: `NativeMesh_${i + 1}`, mesh: i + 1, skin: 0,
+                extras: {atpNativeMeshIndex: i + 1, atpDefaultVisible: initiallyVisible}})
+        })
+        f.json.extras.atpInteractions = {version: 1, eyes: {Open: [], Closed: [1, 2]}, hiddenNodes: initiallyVisible ? [] : [3, 4]}
+        if (initiallyVisible) f.json.scenes[0].nodes.push(3, 4)
+        const modelRef = ref(f.glb())
+        const input = a.attribute(new Float32Array([0, .5, 1]), 'SCALAR', 1)
+        Object.assign(a.json.accessors[input], {min: [0], max: [1]})
+        const translation = a.attribute(new Float32Array([0, 0, 0, .5, 0, 0, 1, 0, 0]), 'VEC3', 3)
+        const rotation = a.attribute(new Float32Array([0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]), 'VEC4', 4)
+        a.json.animations = [{name: 'visibility', channels: ['translation', 'rotation'].map((path, sampler) => ({sampler, target: {node: 1, path}})),
+            samplers: [translation, rotation].map(output => ({input, output, interpolation: 'STEP'}))}]
+        a.json.extras.atpClip = {fps: 2, frameCount: 2, duration: 1}
+        const animationRef: AnimationRef = {...ref(a.glb()), id: 'visibility', name: 'Visibility', duration: 1,
+            eventBinding: {version: 2, events: [{frame: 1, type: 'EyeSet', state: initiallyVisible ? 'None' : 'Closed', enableBlink: false}],
+                visibility: names.map(meshName => ({meshName, times: [0, .5], values: [initiallyVisible, !initiallyVisible]}))}}
+        const fetch = globalThis.fetch
+        globalThis.fetch = async input => {
+            const path = new URL(String(input)).pathname.replace(/^\//, '')
+            assert.ok(resources.has(path), `unexpected resource ${path}`)
+            return new Response(resources.get(path))
+        }
+        let model: GLTF | undefined, exported: GLTF | undefined
+        try {
+            const signal = new AbortController().signal
+            model = await loadGLB(modelRef, signal)
+            await prepareNativeEyes(model, signal)
+            const bytes = await downloadModel(model, new Set(initiallyVisible ? [2, 3, 4] : [2]), [animationRef], signal, () => {})
+            exported = await loadGLB(ref(bytes), signal)
+            const output = exported.parser.json, nodes = output.nodes.filter((node: any) => node.mesh !== undefined)
+            assert.deepEqual(output.meshes.map((mesh: any) => mesh.name), ['body', ...names])
+            assert.equal(nodes.length, 3)
+            const channels = output.animations[0].channels.filter((channel: any) => channel.target.path === 'scale')
+            assert.equal(channels.length, 2)
+            assert.equal(new Set(nodes.map((node: any) => node.skin)).size, 3, 'each controlled mesh keeps its own skeleton branch')
+            for (const node of nodes.slice(1)) {
+                const joints = output.skins[node.skin].joints
+                const channel = channels.find((channel: any) => joints.every((joint: number) => output.nodes[channel.target.node].children.includes(joint)))
+                assert.ok(channel, 'each controlled mesh has a visibility channel on its skeleton parent')
+                assert.deepEqual(output.nodes[channel.target.node].scale, initiallyVisible ? [1, 1, 1] : [0, 0, 0])
+                assert.equal(output.animations[0].samplers[channel.sampler].interpolation, 'STEP')
+                assert.ok(joints.every((joint: number) => ['translation', 'rotation'].every(path =>
+                    output.animations[0].channels.some((channel: any) => channel.target.node === joint && channel.target.path === path))),
+                'visibility branches retain skeletal animation')
+            }
+            const tracks = exported.animations[0].tracks.filter(track => track.name.endsWith('.scale'))
+            assert.equal(tracks.length, 2)
+            for (const track of tracks) {
+                assert.deepEqual(Array.from(track.times), [0, .5])
+                assert.deepEqual(Array.from(track.values), initiallyVisible ? [1, 1, 1, 0, 0, 0] : [0, 0, 0, 1, 1, 1])
+            }
+        } finally {
+            globalThis.fetch = fetch
+            if (exported) disposeGLTF(exported)
+            if (model) disposeGLTF(model)
+        }
+    })
 }
 
 test('download checks embedded image alpha independently and preserves genuine transparency', async () => {

@@ -503,8 +503,9 @@ inspection, independently of preview ImageBitmap disposal.
 Native custom skeletal interpolation is sampled once per pose at 60 Hz into
 standard translation/rotation tracks; existing ordinary STEP tracks remain STEP.
 Preview and export consume the same producer-generated `{meshName, times, values}`
-array. Export resolves original mesh names to glTF nodes and retains those names
-without numeric suffixes. Preview binds named curves to actual scene objects and
+array. Each original mesh name resolves to every matching glTF mesh node, retaining
+the names without numeric suffixes. Every included controlled node receives its
+own visibility channel. Preview binds named curves to actual scene objects and
 uses discrete Boolean tracks, with a procedural blink override for eye meshes.
 
 Explicit native SubObject and EyeSet writes become standard STEP scale channels

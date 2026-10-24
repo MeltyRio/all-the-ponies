@@ -75,8 +75,14 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
         }
         const actorRoot = nodeMap.get(0)!, roots = [actorRoot]
         const boneByUUID = new Map([...jointObjects(model)].map(([id, object]) => [object.uuid, id]))
-        const meshNodesByName = new Map<string, number>()
-        source.nodes.forEach((node: Json, index: number) => { if (node.mesh !== undefined) meshNodesByName.set(source.meshes[node.mesh].name, index) })
+        // Native names can identify multiple submeshes; retain every target.
+        const meshNodesByName = new Map<string, number[]>()
+        source.nodes.forEach((node: Json, index: number) => {
+            if (node.mesh === undefined) return
+            const name = source.meshes[node.mesh].name
+            if (!meshNodesByName.has(name)) meshNodesByName.set(name, [])
+            meshNodesByName.get(name)!.push(index)
+        })
         const clips: {animation: Json, curves: Map<number, VisibilityCurve>}[] = []
         const selected = new Map(refs.map(ref => [ref.id, ref]))
         for (const ref of selected.values()) {
@@ -110,7 +116,11 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
                 }
                 // The bound clip shares the same named, seconds-based visibility
                 // data with preview. Only glTF channel targets need node indices.
-                clips.push({animation, curves: new Map(clip.visibility.map(curve => [meshNodesByName.get(curve.meshName)!, curve]))})
+                const curves = new Map<number, VisibilityCurve>()
+                for (const curve of clip.visibility) {
+                    for (const id of meshNodesByName.get(curve.meshName)!) curves.set(id, curve)
+                }
+                clips.push({animation, curves})
             } finally { disposeGLTF(loaded) }
             progress(++completed, total)
             await new Promise(resolve => setTimeout(resolve, 0))
