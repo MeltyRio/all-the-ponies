@@ -170,7 +170,6 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         disposeGLTF(value: { name: string }) { disposed.push(value.name) },
         rigMetadata(value: unknown) { return { key: value === child ? childRef.rigKey : ref.rigKey, jointNodes: [1] } },
         jointObjects(value: typeof parent) { return new Map([[1, value.bone]]) },
-        checkAdditionalActor() {},
         applyNativeDepth() {},
         nativeTransparentSort,
         nativeUVClock() { return { active: false, update() {}, snapshot() { return undefined } } },

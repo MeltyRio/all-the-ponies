@@ -4,10 +4,10 @@ This draft adds an optional entry to the existing pony, pet and costume detail p
 ATP's `ObjectPage` action slot, translated object name, `DialogComponent`, buttons,
 asset URL resolver and i18n. GLB downloads use the current appearance and bake
 selected animations on the client.
-No catalogue entry means no 3D button. Existing inventory/variant controls are
-unchanged. Each page looks up its object ID in the same catalogue; a costume
-entry represents a verified, complete outfit model. Pony entries may also provide
-an optional, owner-specific wardrobe bundle.
+Valid detail pages show the 3D button and load the catalogue when it is clicked.
+Existing inventory/variant controls are unchanged. Costume entries use verified
+native outfit models or standalone native part previews without inventing an owner.
+Pony entries may also provide an optional, owner-specific wardrobe bundle.
 
 ## Run the demo with game models
 
@@ -191,6 +191,14 @@ consumer has generated game resources to display.
 Its existing sync process validates the catalogue's local references, uploads
 referenced GLBs first, then the catalogue, and finally the root manifest. The
 manifest records the hash of the **uploaded, reserialized** catalogue JSON.
+
+Valid Pony, Pet and Costume detail pages show the 3D button directly. The
+launcher reads the manifest and full catalogue only when the button is clicked.
+Loading remains visible during initialization. A loading failure closes the
+viewer and releases its resources; the button remains available.
+The loader shares one catalogue version and in-flight request, with independent
+caller cancellation. It releases the parsed catalogue after 60 seconds without
+a metadata request; selected model descriptions are cloned for each session.
 The viewer does not compare those JSON bytes to a pre-upload digest. Each GLB
 has a checked byte count and rig compatibility metadata; its SHA-256 identifies
 the generated asset without being recomputed in the browser.

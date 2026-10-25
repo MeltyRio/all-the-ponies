@@ -16,6 +16,7 @@ import { getObject, loaded as gameDataLoaded, translateName } from '../../script
 import { useLocalStorage } from '@vueuse/core';
 
 const props = defineProps<{model: ModelRef, identity?: string}>()
+const emit = defineEmits<{close: []}>()
 const { t } = useI18n()
 const wardrobeOpen = useLocalStorage('model-viewer-wardrobe-open', false)
 const animationMenu = computed(() => buildAnimationMenu(props.model.animations, props.model.preferredAnimations))
@@ -76,7 +77,6 @@ let disposed = false
 const slots: WardrobeSlot[] = ['Mane', 'Body', 'Tail']
 const wardrobe = shallowRef<WardrobeProfile>()
 const selectedParts = shallowRef<Partial<Record<WardrobeSlot, string>>>({})
-const wardrobeAttempted = shallowRef(false)
 const focusedSet = shallowRef('')
 const outfitList = useTemplateRef('outfit-list')
 const wardrobeBack = useTemplateRef('wardrobe-back')
@@ -128,16 +128,16 @@ async function backToOutfits() {
     focusedCard?.focus({preventScroll: true})
 }
 function updateState(value: ViewerState) {
+    if (value.error) { emit('close'); return }
     Object.assign(state, value)
     if (controller?.wardrobe) {
         wardrobe.value = controller.wardrobe
         selectedParts.value = controller.snapshot().wardrobe ?? {}
     }
-    if (props.model.wardrobe && state.ready && wardrobeOpen.value && !wardrobeAttempted.value) void openWardrobe()
+    if (props.model.wardrobe && state.ready && wardrobeOpen.value && !wardrobe.value) void openWardrobe()
 }
 async function openWardrobe() {
     if (!controller || !state.ready || state.wardrobeLoading || wardrobe.value) return
-    wardrobeAttempted.value = true
     await controller.openWardrobe()
 }
 function toggleWardrobe(event: Event) {
@@ -151,10 +151,8 @@ onMounted(async () => {
         if (disposed) return
         controller = mountViewer(host.value!, props.model, updateState)
         host.value!.querySelector('canvas')?.setAttribute('aria-label', t('model_viewer.canvas'))
-    } catch (error) {
-        if (disposed) return
-        state.loading = false
-        state.error = error instanceof Error ? error.message : String(error)
+    } catch {
+        if (!disposed) emit('close')
     }
 })
 onBeforeUnmount(() => {
@@ -294,7 +292,7 @@ onBeforeUnmount(() => {
                 </template>
             </div>
         </details>
-        <p v-if="state.error && !state.wardrobeLoading" class="model-status" role="alert">{{ t('info_card.error') }}: {{ state.error }}</p>
+        <p v-if="state.loading" class="model-status" role="status">{{ t('model_viewer.loading') }}</p>
     </div>
 </template>
 

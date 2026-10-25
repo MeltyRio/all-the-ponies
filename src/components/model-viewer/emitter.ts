@@ -14,7 +14,7 @@ const vector = (value: unknown, count: number): value is number[] => Array.isArr
 const keys = (value: unknown, expected: string[]) => value && typeof value === 'object' && !Array.isArray(value) &&
     Object.keys(value).sort().join(',') === expected.sort().join(',')
 
-export function validateNativeEmitter(value: unknown): NativeEmitterProfile {
+function validateNativeEmitter(value: unknown): NativeEmitterProfile {
     const d = value as NativeEmitterProfile
     const p = d?.particle
     if (!keys(d, ['version', 'coordinateSpace', 'anchor', 'texture', 'particle']) || d.version !== 1 ||
@@ -47,7 +47,7 @@ type Particle = { age: number, segment: number, segmentAge: number, durations: n
  * values inferred from model geometry. Consume Time's draw even for equal bounds.
  */
 export function createEmitterSimulation(definition: NativeEmitterProfile, random = Math.random) {
-    const p = validateNativeEmitter(definition).particle
+    const p = definition.particle
     let active = false
     let emitted = false
     let particles: Particle[] = []

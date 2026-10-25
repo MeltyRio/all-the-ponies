@@ -25,6 +25,7 @@
   },
   "model_viewer": {
     "open": "View 3D model",
+    "loading": "Loading 3D model…",
     "canvas": "3D model. Drag or use left and right arrow keys to rotate.",
     "reset": "Reset view",
     "unlock_rotation": "Unlock rotation",

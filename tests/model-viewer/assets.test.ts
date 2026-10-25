@@ -1,14 +1,20 @@
 import { test, afterEach } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { resolveModel, fetchBytes, disposeGLTF } from '../../src/components/model-viewer/assets.ts'
 
 const originalFetch = globalThis.fetch
-afterEach(() => { globalThis.fetch = originalFetch })
+afterEach(async () => {
+    globalThis.fetch = async () => Response.json({})
+    await resolveModel('Pony_Test', signal())
+    globalThis.fetch = originalFetch
+})
 const signal = () => new AbortController().signal
 const digest = 'b'.repeat(64)
 const bytes = Buffer.from('binary fixture')
 const ref = { path: `models/3d/${digest}.glb`, sha256: digest, bytes: bytes.length, rigKey: 'a'.repeat(64) }
 const model = { ...ref, animations: [{ ...ref, id: 'move', name: 'Move', duration: 1e-9 }] }
+const manifestFor = (catalogue: unknown) => ({'models_3d.json': createHash('sha256').update(JSON.stringify(catalogue)).digest('hex')})
 
 test('semantic catalogue survives uploader JSON formatting and uses uploaded manifest version', async () => {
     // Python's uploader also changes exponent spelling without changing the data.
@@ -31,6 +37,120 @@ test('unknown identities do not substitute a model', async () => {
         ? JSON.stringify({ 'models_3d.json': 'b'.repeat(64) })
         : JSON.stringify({ schemaVersion: 1, models: { Pony_Test: model } }))
     assert.equal(await resolveModel('Pony_Missing', signal()), null)
+})
+
+test('same catalogue version is fetched and parsed once across sequential and concurrent callers', async () => {
+    let catalogueRequests = 0, catalogueParses = 0
+    globalThis.fetch = async input => {
+        if (String(input).includes('manifest.json')) return Response.json({'models_3d.json': '8'.repeat(64)})
+        catalogueRequests++
+        const response = Response.json({schemaVersion: 1, models: {Pony_Test: model}})
+        const json = response.json.bind(response)
+        response.json = () => { catalogueParses++; return json() }
+        return response
+    }
+    const first = await resolveModel('Pony_Test', signal())
+    const second = await resolveModel('Pony_Test', signal())
+    const [third, fourth] = await Promise.all([resolveModel('Pony_Test', signal()), resolveModel('Pony_Test', signal())])
+    for (const result of [first, second, third, fourth]) assert.deepEqual(result, model)
+    assert.equal(catalogueRequests, 1)
+    assert.equal(catalogueParses, 1)
+    first!.animations[0].name = 'Changed in one session'
+    assert.equal(second!.animations[0].name, 'Move')
+    assert.equal(third!.animations[0].name, 'Move')
+})
+
+test('a failed catalogue request can be retried with the same manifest version', async () => {
+    let catalogues = 0
+    globalThis.fetch = async input => {
+        if (String(input).includes('manifest.json')) return Response.json({'models_3d.json': digest})
+        return ++catalogues === 1 ? new Response(null, {status: 503})
+            : Response.json({schemaVersion: 1, models: {Pony_Test: model}})
+    }
+    await assert.rejects(resolveModel('Pony_Test', signal()), /503/)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), model)
+    assert.equal(catalogues, 2)
+})
+
+test('canceling one waiting caller leaves the shared catalogue available to another', async () => {
+    const started = Promise.withResolvers<void>(), response = Promise.withResolvers<Response>()
+    let sharedSignal: AbortSignal, catalogues = 0
+    globalThis.fetch = async (input, options) => {
+        if (String(input).includes('manifest.json')) return Response.json({'models_3d.json': digest})
+        catalogues++; sharedSignal = options!.signal!
+        started.resolve()
+        return response.promise
+    }
+    const canceled = new AbortController()
+    const first = resolveModel('Pony_Test', canceled.signal)
+    const rejected = assert.rejects(first, {name: 'AbortError'})
+    const second = resolveModel('Pony_Test', signal())
+    await started.promise
+    await new Promise(setImmediate)
+    canceled.abort()
+    await rejected
+    assert.equal(sharedSignal!.aborted, false)
+    response.resolve(Response.json({schemaVersion: 1, models: {Pony_Test: model}}))
+    assert.deepEqual(await second, model)
+    assert.equal(catalogues, 1)
+})
+
+test('canceling every waiting caller aborts the transfer and allows a fresh request', async () => {
+    const started = Promise.withResolvers<void>()
+    let sharedSignal: AbortSignal, catalogues = 0
+    globalThis.fetch = async (input, options) => {
+        if (String(input).includes('manifest.json')) return Response.json({'models_3d.json': digest})
+        if (++catalogues > 1) return Response.json({schemaVersion: 1, models: {Pony_Test: model}})
+        sharedSignal = options!.signal!
+        started.resolve()
+        return new Promise((_, reject) => sharedSignal.addEventListener('abort', () => reject(sharedSignal.reason), {once: true}))
+    }
+    const canceled = new AbortController()
+    const first = resolveModel('Pony_Test', canceled.signal)
+    const rejected = assert.rejects(first, {name: 'AbortError'})
+    await started.promise
+    canceled.abort()
+    await rejected
+    assert.equal(sharedSignal!.aborted, true)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), model)
+    assert.equal(catalogues, 2)
+})
+
+test('manifest changes replace the cache without a late older request replacing the new version', async () => {
+    const started = Promise.withResolvers<void>(), oldResponse = Promise.withResolvers<Response>()
+    const oldVersion = 'a'.repeat(64), newVersion = 'c'.repeat(64)
+    let version = oldVersion, catalogues = 0
+    const changed = {...model, animations: [{...model.animations[0], name: 'New'}]}
+    globalThis.fetch = async input => {
+        const url = new URL(String(input))
+        if (url.pathname === '/manifest.json') return Response.json({'models_3d.json': version})
+        catalogues++
+        if (url.searchParams.get('v') === oldVersion) { started.resolve(); return oldResponse.promise }
+        return Response.json({schemaVersion: 1, models: {Pony_Test: changed}})
+    }
+    const older = resolveModel('Pony_Test', signal())
+    await started.promise
+    version = newVersion
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), changed)
+    oldResponse.resolve(Response.json({schemaVersion: 1, models: {Pony_Test: model}}))
+    assert.deepEqual(await older, model)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), changed)
+    assert.equal(catalogues, 2)
+})
+
+test('an idle catalogue expires while returned model data remains usable', async t => {
+    t.mock.timers.enable({apis: ['setTimeout']})
+    let catalogues = 0
+    globalThis.fetch = async input => {
+        if (String(input).includes('manifest.json')) return Response.json({'models_3d.json': digest})
+        catalogues++
+        return Response.json({schemaVersion: 1, models: {Pony_Test: model}})
+    }
+    const selected = await resolveModel('Pony_Test', signal())
+    t.mock.timers.tick(60_001)
+    assert.deepEqual(selected, model)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), model)
+    assert.equal(catalogues, 2)
 })
 
 test('shared GPU objects and image bitmaps are each released once across scenes', () => {
@@ -72,7 +192,7 @@ test('catalogue v3 explicitly enables only exported native click and dizzy ident
     const interactions = {version: 1, clickAnimations: ['move'], dizzyAnimation: 'move'}
     let catalogue: any = {schemaVersion: 3, models: {Pony_Test: {...model, interactions}}}
     globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
-        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+        ? manifestFor(catalogue) : catalogue)
     assert.deepEqual((await resolveModel('Pony_Test', signal()))!.interactions, interactions)
     catalogue.models.Pony_Test.interactions = {...interactions, clickAnimations: ['missing']}
     await assert.rejects(resolveModel('Pony_Test', signal()))
@@ -92,7 +212,7 @@ test('catalogue event bindings and preferred clips require valid explicit refere
     const selected = {...model, animations: [animation], interactions, preferredAnimations: ['move']}
     const catalogue: any = {schemaVersion: 4, models: {Pony_Test: selected}}
     globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
-        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+        ? manifestFor(catalogue) : catalogue)
     assert.deepEqual(await resolveModel('Pony_Test', signal()), selected)
     catalogue.schemaVersion = 3
     await assert.rejects(resolveModel('Pony_Test', signal()), /version 4/)
@@ -120,7 +240,7 @@ test('schema 4 expands compact refs with bindings and shares table objects with 
             controller: 'native-first-then-random-v1', transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]},
     }}}
     globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
-        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+        ? manifestFor(catalogue) : catalogue)
     const result = (await resolveModel('Pony_Test', signal()))!
     assert.deepEqual(result.animations, [base, {...other, eventBinding: binding}])
     assert.equal(result.animations[0], result.additionalActor!.model.animations[0])
@@ -132,7 +252,7 @@ test('schema 4 expands compact refs with bindings and shares table objects with 
 test('compact animation references reject old schemas, invalid indices and ambiguous binding wrappers', async () => {
     let catalogue: any
     globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
-        ? {'models_3d.json': 'b'.repeat(64)} : catalogue)
+        ? manifestFor(catalogue) : catalogue)
     for (const schemaVersion of [1, 2, 3]) {
         catalogue = {schemaVersion, animationAssets: [model.animations[0]], models: {Pony_Test: {...model, animations: [0]}}}
         await assert.rejects(resolveModel('Pony_Test', signal()), /catalogue version 4/)

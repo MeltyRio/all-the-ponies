@@ -39,6 +39,24 @@ export interface ModelRef extends ActorRef {
 const cataloguePath = 'models_3d.json'
 const digestPattern = /^[a-f0-9]{64}$/
 
+interface Catalogue {
+    schemaVersion: number
+    models: Record<string, ModelRef>
+    animationAssets?: AnimationRef[]
+    resolved: Set<string>
+}
+
+interface CatalogueRequest {
+    version: string
+    controller: AbortController
+    promise: Promise<Catalogue>
+    users: number
+    pending: boolean
+    timer?: ReturnType<typeof setTimeout>
+}
+
+let catalogueRequest: CatalogueRequest | undefined
+
 function check(condition: unknown, message: string): asserts condition {
     if (!condition) throw new Error(message)
 }
@@ -78,7 +96,7 @@ function checkActor(model: ActorRef, playable = false, identity?: string) {
     }
 }
 
-export function checkAdditionalActor(actor: AdditionalActorRef) {
+function checkAdditionalActor(actor: AdditionalActorRef) {
     check(actor && actor.controller === 'native-first-then-random-v1', 'Unsupported additional actor controller')
     check(Number.isSafeInteger(actor.parentRoot) && actor.parentRoot >= 0, 'Invalid parent root index')
     checkActor(actor.model, true)
@@ -114,16 +132,75 @@ async function fetchJson(path: string, signal: AbortSignal, version?: string) {
  * The manifest version selects the catalogue using the normal ATP asset URL.
  */
 export async function resolveModel(identity: string, signal: AbortSignal): Promise<ModelRef | null> {
+    const version = await readCatalogueVersion(signal)
+    if (!version) return null
+    const catalogue = await loadCatalogue(version, signal)
+    const model = catalogueModel(catalogue, identity)
+    return model ? structuredClone(model) : null
+}
+
+async function readCatalogueVersion(signal: AbortSignal) {
     const manifest = await fetchJson('manifest.json', signal) as Record<string, unknown>
     check(manifest && typeof manifest === 'object' && !Array.isArray(manifest), 'Invalid asset manifest')
-    if (!Object.prototype.hasOwnProperty.call(manifest, cataloguePath)) return null
     const version = manifest[cataloguePath]
+    if (catalogueRequest && catalogueRequest.version !== version) forgetCatalogue(catalogueRequest)
+    if (!Object.prototype.hasOwnProperty.call(manifest, cataloguePath)) return null
     check(typeof version === 'string' && digestPattern.test(version), 'Invalid 3D catalogue version')
-    const catalogue = await fetchJson(cataloguePath, signal, version) as {
-        schemaVersion: number
-        models: Record<string, ModelRef>
-        animationAssets?: AnimationRef[]
+    return version
+}
+
+async function loadCatalogue(version: string, signal: AbortSignal): Promise<Catalogue> {
+    signal.throwIfAborted()
+    let request = catalogueRequest
+    if (!request || request.version !== version) {
+        if (request) forgetCatalogue(request)
+        const controller = new AbortController()
+        request = {version, controller, users: 0, pending: true,
+            promise: fetchJson(cataloguePath, controller.signal, version).then(readCatalogue)}
+        catalogueRequest = request
+        const created = request
+        void request.promise.then(() => { created.pending = false }, () => {
+            created.pending = false
+            forgetCatalogue(created)
+        })
     }
+    clearTimeout(request.timer)
+    request.users++
+    try {
+        const catalogue = await waitForCatalogue(request.promise, signal)
+        signal.throwIfAborted()
+        return catalogue
+    } finally {
+        request.users--
+        if (!request.users) {
+            if (request.pending) {
+                request.controller.abort()
+                forgetCatalogue(request)
+            } else if (catalogueRequest === request) {
+                // The full catalogue is large; selected session data is cloned.
+                const completed = request
+                request.timer = setTimeout(() => forgetCatalogue(completed), 60_000)
+            }
+        }
+    }
+}
+
+function waitForCatalogue(promise: Promise<Catalogue>, signal: AbortSignal): Promise<Catalogue> {
+    return new Promise((resolve, reject) => {
+        const abort = () => reject(signal.reason)
+        signal.addEventListener('abort', abort, {once: true})
+        void promise.then(resolve, reject).finally(() => signal.removeEventListener('abort', abort))
+    })
+}
+
+function forgetCatalogue(request: CatalogueRequest) {
+    if (catalogueRequest !== request) return
+    clearTimeout(request.timer)
+    catalogueRequest = undefined
+}
+
+function readCatalogue(value: unknown): Catalogue {
+    const catalogue = value as Catalogue
     check([1, 2, 3, 4].includes(catalogue?.schemaVersion) && catalogue.models && typeof catalogue.models === 'object'
         && !Array.isArray(catalogue.models), 'Unsupported 3D catalogue')
     const table = catalogue.animationAssets
@@ -132,6 +209,15 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
         check(Array.isArray(table), 'Invalid animation asset table')
         check(table.every(asset => asset && typeof asset === 'object' && !Array.isArray(asset)), 'Invalid animation asset table entry')
     }
+    catalogue.resolved = new Set()
+    return catalogue
+}
+
+function catalogueModel(catalogue: Catalogue, identity: string): ModelRef | null {
+    if (!Object.prototype.hasOwnProperty.call(catalogue.models, identity)) return null
+    const model = catalogue.models[identity]
+    if (catalogue.resolved.has(identity)) return model
+    const table = catalogue.animationAssets
     function assetAt(index: unknown): AnimationRef {
         check(catalogue.schemaVersion === 4 && table && Number.isSafeInteger(index)
             && (index as number) >= 0 && (index as number) < table.length, 'Invalid compact animation asset reference')
@@ -146,8 +232,6 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
             return item as AnimationRef
         })
     }
-    if (!Object.prototype.hasOwnProperty.call(catalogue.models, identity)) return null
-    const model = catalogue.models[identity]
     expandAnimations(model)
     checkActor(model, false, identity)
     if (model.wardrobe !== undefined) {
@@ -174,6 +258,7 @@ export async function resolveModel(identity: string, signal: AbortSignal): Promi
         && model.preferredAnimations.every(id => ids.has(id)), 'Invalid preferred animation reference')
     if (model.animations.some(animation => animation.eventBinding !== undefined))
         check(catalogue.schemaVersion === 4 && model.interactions !== undefined, 'Animation event bindings require the native controller and catalogue version 4')
+    catalogue.resolved.add(identity)
     return model
 }
 

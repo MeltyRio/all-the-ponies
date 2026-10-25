@@ -1,13 +1,12 @@
 import * as THREE from 'three'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import { bindAnimation, jointObjects, rigMetadata } from './animation'
-import { checkAdditionalActor, disposeGLTF, loadGLB, type AdditionalActorRef } from './assets'
+import { disposeGLTF, loadGLB, type AdditionalActorRef } from './assets'
 import { applyNativeDepth } from './native-materials'
 
 /** One native AdditionalObject actor, with its own rig and animation clock. */
 export async function loadAdditionalActor(ref: AdditionalActorRef, parent: GLTF, signal: AbortSignal,
     wake: () => void, failed: (error: unknown) => void) {
-    checkAdditionalActor(ref)
     const parentRig = rigMetadata(parent)
     let root = jointObjects(parent).get(parentRig.jointNodes[ref.parentRoot])
     if (!root) throw new Error('Additional actor parent root is absent')
