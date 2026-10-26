@@ -376,11 +376,12 @@ export function mountViewer(host: HTMLElement, ref: ModelRef, changed: (state: V
             const nativeEyes = await prepareNativeEyes(loaded, modelAbort.signal)
             const nativeWardrobe = wardrobeBundle ? prepareWardrobe(loaded) : undefined
             if (wardrobeBundle && !nativeWardrobe) throw new Error('Wardrobe data is absent')
-            if (rigMetadata(loaded).key !== ref.rigKey) throw new Error('Model rig identity mismatch')
+            const rig = rigMetadata(loaded)
+            if (rig.key !== ref.rigKey) throw new Error('Model rig identity mismatch')
             if (loaded.animations.length) throw new Error('Static model unexpectedly contains animations')
             applyNativeDepth(loaded)
             const clock = nativeUVClock(loaded)
-            const joints = [...jointObjects(loaded).values()].map(object => ({
+            const joints = [...jointObjects(loaded, rig).values()].map(object => ({
                 object, position: object.position.clone(), quaternion: object.quaternion.clone(), scale: object.scale.clone(),
             }))
             preparingEffects = await createNativeEmitters(loaded, scene, camera)

@@ -37,8 +37,7 @@ export function rigMetadata(gltf: GLTF): Rig {
     return rig
 }
 
-export function jointObjects(gltf: GLTF) {
-    const rig = rigMetadata(gltf)
+export function jointObjects(gltf: GLTF, rig: Rig) {
     const objects = new Map<number, Object3D>()
     gltf.scene.traverse(object => {
         const index = gltf.parser.associations.get(object)?.nodes
@@ -214,17 +213,13 @@ export async function bindAnimation(model: GLTF, animation: GLTF, ref: Animation
         && Number.isFinite(metadata.fps) && metadata.fps > 0, 'Invalid animation metadata')
     const binding = ref.eventBinding
     check(metadata.events === undefined && metadata.eventProfile === undefined, 'Embedded animation events are no longer supported')
-    if (binding !== undefined) {
-        check(binding?.version === 2 && Object.keys(binding).sort().join(',') === 'events,version,visibility'
-            && Array.isArray(binding.events) && Array.isArray(binding.visibility), 'Unsupported animation event binding')
-        check(allowNativeEvents, 'Animation events are not supported by this viewer')
-    }
+    if (binding !== undefined) check(allowNativeEvents, 'Animation events are not supported by this viewer')
     const events = nativeEvents(model, binding?.events ?? [], metadata.frameCount, allowNativeEvents)
     check(Math.abs(metadata.frameCount / metadata.fps - ref.duration) < 1e-4
         && Math.abs(metadata.duration - ref.duration) < 1e-4, 'Native animation timing mismatch')
     const source = animation.animations[0]
     const definition = json.animations[0]
-    const joints = jointObjects(model)
+    const joints = jointObjects(model, targetRig)
     const seen = new Set<string>()
     check(source.tracks.length === definition.channels.length
         && source.tracks.length === targetRig.parents.length * 2, 'Animation track layout mismatch')

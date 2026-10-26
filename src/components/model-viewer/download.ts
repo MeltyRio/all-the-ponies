@@ -74,7 +74,7 @@ export async function downloadModel(model: GLTF, visibleNodes: ReadonlySet<numbe
             out.nodes.push(node)
         }
         const actorRoot = nodeMap.get(0)!, roots = [actorRoot]
-        const boneByUUID = new Map([...jointObjects(model)].map(([id, object]) => [object.uuid, id]))
+        const boneByUUID = new Map([...jointObjects(model, rig)].map(([id, object]) => [object.uuid, id]))
         // Native names can identify multiple submeshes; retain every target.
         const meshNodesByName = new Map<string, number[]>()
         source.nodes.forEach((node: Json, index: number) => {

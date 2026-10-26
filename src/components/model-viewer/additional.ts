@@ -8,7 +8,7 @@ import { applyNativeDepth } from './native-materials'
 export async function loadAdditionalActor(ref: AdditionalActorRef, parent: GLTF, signal: AbortSignal,
     wake: () => void, failed: (error: unknown) => void) {
     const parentRig = rigMetadata(parent)
-    let root = jointObjects(parent).get(parentRig.jointNodes[ref.parentRoot])
+    let root = jointObjects(parent, parentRig).get(parentRig.jointNodes[ref.parentRoot])
     if (!root) throw new Error('Additional actor parent root is absent')
     const model = await loadGLB(ref.model, signal)
     let disposed = false
@@ -111,7 +111,8 @@ export async function loadAdditionalActor(ref: AdditionalActorRef, parent: GLTF,
     return {
         group, dispose, restart,
         rebindParent(next: GLTF) {
-            const nextRoot = jointObjects(next).get(rigMetadata(next).jointNodes[ref.parentRoot])
+            const rig = rigMetadata(next)
+            const nextRoot = jointObjects(next, rig).get(rig.jointNodes[ref.parentRoot])
             if (!nextRoot) throw new Error('Additional actor parent root is absent')
             parent = next
             root = nextRoot

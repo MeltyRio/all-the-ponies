@@ -204,7 +204,6 @@ export async function createNativeEmitters(gltf: GLTF, scene: THREE.Scene, camer
     }
     return {
         trigger(name: string, elapsed = 0) {
-            if (!Number.isFinite(elapsed) || elapsed < 0) throw new Error('Invalid native emitter catch-up')
             if (disposed) throw new Error('Native emitter disposed')
             const definition = definitions[name]
             if (!definition || !textures.has(name)) throw new Error('Missing native emitter event dependency')
