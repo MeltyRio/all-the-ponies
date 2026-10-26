@@ -197,7 +197,7 @@ for (const duplicateNames of [false, true]) for (const initiallyVisible of [fals
             f.json.nodes.push({name: `NativeMesh_${i + 1}`, mesh: i + 1, skin: 0,
                 extras: {atpNativeMeshIndex: i + 1, atpDefaultVisible: initiallyVisible}})
         })
-        f.json.extras.atpInteractions = {version: 1, eyes: {Open: [], Closed: [1, 2]}, hiddenNodes: initiallyVisible ? [] : [3, 4]}
+        f.json.extras.atpInteractions = {version: 1, blink: false, eyes: {Open: [], Closed: [1, 2]}, hiddenNodes: initiallyVisible ? [] : [3, 4]}
         if (initiallyVisible) f.json.scenes[0].nodes.push(3, 4)
         const modelRef = ref(f.glb())
         const input = a.attribute(new Float32Array([0, .5, 1]), 'SCALAR', 1)

@@ -354,12 +354,14 @@ clickAnimations: [...], dizzyAnimation?: id}` for a Pony or its pre-generated
 Costume. ATP does not infer these lists from names. Pets and older catalogues
 keep their existing playback controls.
 
-When the selected native Open/Closed meshes exist, are distinct, and match the
-default appearance, the viewer blinks with a 2–5 second open interval and a
-0.1 second closed interval. It retains the native timer update order and
-`EyeSet` expression/EnableBlink changes. Empty or unresolved eye groups do not
-invent geometry. Events use integer native frames; pose interpolation remains
-independent. Every crossed event runs in source order, including frame zero.
+The model profile carries the producer's verified `blink` capability alongside
+its eye groups. The viewer uses this source capability, independently of whether
+all corresponding geometry survives conversion, with a 2–5 second open interval
+and a 0.1 second closed interval. An empty rendered eye state still hides other
+eye groups and retains `EyeSet` expression/EnableBlink changes and the native
+blink timer. No eye geometry is invented. Events use integer native frames;
+pose interpolation remains independent. Every crossed event runs in source
+order, including frame zero.
 
 A mouse click or single-finger tap must hit the currently visible skinned
 model. Blank space, dragging, cancellation, modifier/right buttons and multiple

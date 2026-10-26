@@ -60,7 +60,7 @@ function fixture(mode: 'normal' | 'pending-child' | 'eventful' | 'pending-effect
         const rig = {version: 1, key: 'a'.repeat(64), parents: [-1], jointNodes: [1], coordinateSystem: 'native-Y-down-to-glTF-Y-up-RxPi'}
         const json = {nodes: [{children: [1, 2]}, {}, {name: 'NativeMesh_0', mesh: 0, extras: {atpNativeMeshIndex: 0, atpDefaultVisible: true}},
             {name: 'NativeMesh_1', mesh: 1, extras: {atpNativeMeshIndex: 1, atpDefaultVisible: false}}], meshes: [{name: 'eye_open'}, {name: 'eye_closed'}], scenes: [{nodes: [0]}],
-            extras: {atpRig: rig, atpInteractions: {version: 1, hiddenNodes: [3], subObjects: [0, 1], eyes: {Open: [0], Closed: [1]}, effects: {stars: {}}}}}
+            extras: {atpRig: rig, atpInteractions: {version: 1, hiddenNodes: [3], subObjects: [0, 1], blink: true, eyes: {Open: [0], Closed: [1]}, effects: {stars: {}}}}}
         Object.assign(parent, {parser: {json, associations: new Map<THREE.Object3D, {nodes: number}>([[parent.scene, {nodes: 0}], [parent.bone, {nodes: 1}], [body, {nodes: 2}], [prop, {nodes: 3}]]),
             getDependency: async (_: string, index: number) => [parent.scene, parent.bone, body, prop][index]}})
         const bone = new THREE.Bone(); bone.name = 'source_root'

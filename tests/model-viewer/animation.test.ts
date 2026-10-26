@@ -156,7 +156,7 @@ test('per-model event bindings reuse skeletal source without leaking events betw
 })
 
 
-async function visibilityFixture(visibility: any[], fps = 30, frames = 150, events: any[] = []) {
+async function visibilityFixture(visibility: any[], fps = 30, frames = 150, events: any[] = [], closedEye = true) {
     const f = fixture()
     const meshes = [true, false, false].map((visible, index) => {
         const mesh = new Mesh(new BoxGeometry(), new MeshBasicMaterial())
@@ -164,12 +164,12 @@ async function visibilityFixture(visibility: any[], fps = 30, frames = 150, even
         mesh.visible = visible
         return mesh
     })
-    f.model.gltf.scene.add(...meshes)
+    f.model.gltf.scene.add(...meshes.filter((_, index) => closedEye || index !== 1))
     const json = f.model.json
     json.meshes = meshes.map(mesh => ({name: mesh.name}))
     json.scenes = [{nodes: [0, 3]}]
-    json.extras.atpInteractions = {version: 1, subObjects: [10, 11, 12], hiddenNodes: [4, 5],
-        eyes: {Open: [10], Closed: [11]}, effects: {stars: {}}}
+    json.extras.atpInteractions = {version: 1, subObjects: closedEye ? [10, 11, 12] : [10, 12], hiddenNodes: closedEye ? [4, 5] : [5],
+        blink: true, eyes: {Open: [10], Closed: closedEye ? [11] : []}, effects: {stars: {}}}
     for (let i = 0; i < meshes.length; i++) {
         json.nodes.push({name: `NativeMesh_${i + 10}`, mesh: i, extras: {atpNativeMeshIndex: i + 10, atpDefaultVisible: i === 0}})
         f.model.gltf.parser.associations.set(meshes[i], {nodes: i + 3})
@@ -264,4 +264,43 @@ test('generated eye visibility preserves native order and blinking has a single 
         assert.deepEqual(f.meshes.slice(0, 2).map(mesh => mesh.visible), eyeFirst ? [true, true] : [false, true])
         mixer.stopAllAction(); mixer.uncacheRoot(f.model.gltf.scene)
     }
+})
+
+
+test('empty Closed state retains EyeSet, blinking and restoration with real visibility tracks', async () => {
+    const f = await visibilityFixture([
+        {meshName: 'eye_open', times: [0, 1, 2], values: [true, false, true]},
+    ], 30, 150, [
+        {frame: 30, type: 'EyeSet', state: 'Closed', enableBlink: false},
+        {frame: 60, type: 'EyeSet', state: 'Open', enableBlink: true},
+    ], false)
+    const mixer = new AnimationMixer(f.model.gltf.scene)
+    mixer.clipAction(f.clip).play()
+    f.eyes.useVisibility(f.clip.nativeVisibility)
+    const player = nativeEventPlayback(f.clip.nativeEvents, f.clip.nativeFPS, {
+        reset() { f.eyes.resetPlayback() },
+        apply(event) { if (event.type === 'EyeSet') f.eyes.set(event) },
+    })
+    assert.equal(f.model.gltf.scene.children.includes(f.meshes[1]), false)
+    mixer.update(0); player.update(0); f.eyes.update(0); mixer.update(0)
+    assert.equal(f.meshes[0].visible, true)
+    f.eyes.update(5); f.eyes.update(0); mixer.update(0)
+    assert.equal(f.meshes[0].visible, false, 'blink hides Open even without Closed geometry')
+    f.eyes.update(.1); f.eyes.update(0); mixer.update(0)
+    assert.equal(f.meshes[0].visible, true, 'blink restores Open')
+    mixer.setTime(1); player.update(1)
+    assert.equal(f.eyes.active, false)
+    assert.equal(f.meshes[0].visible, false, 'empty EyeSet still hides other groups')
+    mixer.setTime(2); player.update(2)
+    assert.equal(f.eyes.active, true)
+    assert.equal(f.meshes[0].visible, true)
+    mixer.setTime(1); player.update(1); mixer.update(0)
+    assert.equal(f.eyes.active, false)
+    assert.equal(f.meshes[0].visible, false, 'backward seek replays the empty state')
+    player.reset(); mixer.setTime(0); player.update(0)
+    assert.equal(f.eyes.active, true)
+    assert.equal(f.meshes[0].visible, true)
+    mixer.stopAllAction(); f.eyes.useVisibility(); f.eyes.reset()
+    assert.equal(f.meshes[0].visible, true)
+    mixer.uncacheRoot(f.model.gltf.scene)
 })

@@ -30,7 +30,7 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
     const json = model.parser.json
     const profile = json.extras?.atpInteractions
     if (profile === undefined) return undefined
-    check(profile?.version === 1 && Object.keys(profile).every(key => ['version', 'eyes', 'hiddenNodes', 'effects', 'subObjects'].includes(key)),
+    check(profile?.version === 1 && Object.keys(profile).every(key => ['version', 'eyes', 'blink', 'hiddenNodes', 'effects', 'subObjects'].includes(key)),
         'Unsupported model interaction profile')
     const hidden: number[] = profile.hiddenNodes ?? []
     check(Array.isArray(hidden) && new Set(hidden).size === hidden.length
@@ -73,12 +73,11 @@ export async function prepareNativeEyes(model: GLTF, signal: AbortSignal) {
         .flatMap((part: {meshes: number[]}) => part.meshes))
     const controlled = new Set([...allEyes, ...subObjects, ...wardrobe])
     check(hidden.every(index => controlled.has(json.nodes[index].extras.atpNativeMeshIndex)), 'Hidden node has no native controller')
-    // An empty Open group is a legal static appearance, not enough evidence to
-    // invent blinking. Other expressions may share native subobjects.
-    const canBlink = Boolean(groups?.Open?.length && groups?.Closed?.length
-        && [...allEyes].filter(index => defaults.get(meshes.get(index)!)).length === groups.Open.length
-        && groups.Open.every(index => defaults.get(meshes.get(index)!))
-        && groups.Closed.every(index => !defaults.get(meshes.get(index)!) && !groups.Open!.includes(index)))
+    check(groups === undefined ? profile.blink === undefined : typeof profile.blink === 'boolean',
+        'Invalid source blink capability')
+    // Source capability survives pruning; an empty rendered state still hides
+    // the other eye groups and participates in the native blink clock.
+    const canBlink = profile.blink === true
     let expression: EyeState = 'Open', enabled = true, open = false, remaining = 0
     let visibility: NativeVisibility | undefined
     function show(state: EyeState, blink = false) {

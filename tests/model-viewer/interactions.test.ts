@@ -12,7 +12,7 @@ function fixture() {
     const json: any = {
         nodes: meshes.map((_, i) => ({extras: {atpNativeMeshIndex: i + 10, atpDefaultVisible: i < 2}})),
         scenes: [{nodes: [0, 1]}],
-        extras: {atpInteractions: {version: 1, hiddenNodes: [2, 3], eyes: {Open: [11], Closed: [12], Happy: [13], Frown: [11]}}},
+        extras: {atpInteractions: {version: 1, blink: true, hiddenNodes: [2, 3], eyes: {Open: [11], Closed: [12], Happy: [13], Frown: [11]}}},
     }
     const model = {scene, scenes: [scene], parser: {json,
         associations: new Map(meshes.map((mesh, i) => [mesh, {nodes: i}])),
@@ -92,6 +92,7 @@ test('drag-return, cancellation, two fingers and modifier buttons cannot become 
 test('hidden SubObject nodes are supported without an eye controller', async () => {
     const f = fixture()
     delete f.json.extras.atpInteractions.eyes
+    delete f.json.extras.atpInteractions.blink
     f.json.extras.atpInteractions.subObjects = [12, 13]
     const controller = (await prepareNativeEyes(f.model, new AbortController().signal))!
     assert.equal(controller.active, false)
@@ -136,4 +137,65 @@ test('exact native frame seeks do not lose an event through floating point floor
     assert.equal(applied.length, 0)
     player.update(123 / 30)
     assert.equal(applied.length, 1)
+})
+
+
+test('a proven empty Closed target still blinks, hides expressions and restores state without restarting time', async () => {
+    const f = fixture(), random = Math.random
+    f.json.extras.atpInteractions.eyes.Closed = []
+    f.json.extras.atpInteractions.hiddenNodes = [3]
+    Math.random = () => 0
+    try {
+        const eyes = (await prepareNativeEyes(f.model, new AbortController().signal))!
+        assert.equal(eyes.active, true)
+        assert.equal(f.model.scene.children.includes(f.meshes[2]!), false)
+        eyes.update(0); eyes.update(2); eyes.update(0)
+        assert.deepEqual(eyes.snapshot().visible, [10], 'closing hides Open even without Closed triangles')
+        const closedPhase = eyes.snapshot()
+        eyes.set({frame: 0, type: 'EyeSet', state: 'Happy', enableBlink: false})
+        eyes.update(5)
+        assert.deepEqual(eyes.snapshot().visible, [10, 13])
+        assert.equal(eyes.snapshot().remaining, closedPhase.remaining)
+        eyes.set({frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: true})
+        assert.deepEqual(eyes.snapshot().visible, [10], 'an empty state still hides other expressions')
+        eyes.resetPlayback()
+        assert.equal(eyes.snapshot().remaining, closedPhase.remaining)
+        assert.equal(eyes.snapshot().open, closedPhase.open)
+        assert.deepEqual(eyes.snapshot().visible, [10, 11])
+        eyes.set({frame: 0, type: 'EyeSet', state: 'Happy', enableBlink: true})
+        eyes.update(.1); eyes.update(0)
+        assert.deepEqual(eyes.snapshot().visible, [10, 13], 'reopening restores the current expression')
+        eyes.reset()
+        assert.deepEqual(eyes.snapshot().visible, [10, 11])
+    } finally { Math.random = random; disposeGLTF(f.model) }
+})
+
+test('all pruned eye targets preserve controller timing while an unapproved controller stays disabled', async () => {
+    const f = fixture()
+    f.meshes[1]!.removeFromParent()
+    const profile = f.json.extras.atpInteractions
+    profile.eyes = {Open: [], Closed: [], Happy: [], Frown: []}
+    profile.hiddenNodes = []
+    const eyes = (await prepareNativeEyes(f.model, new AbortController().signal))!
+    assert.equal(eyes.active, true)
+    eyes.update(0)
+    assert.ok(eyes.snapshot().remaining >= 2)
+    eyes.set({frame: 0, type: 'EyeSet', state: 'Closed', enableBlink: false})
+    assert.deepEqual(eyes.snapshot().visible, [10])
+    assert.equal(eyes.active, false)
+    eyes.resetPlayback()
+    assert.equal(eyes.active, true)
+    disposeGLTF(f.model)
+    const disabled = fixture()
+    disabled.json.extras.atpInteractions.blink = false
+    const staticEyes = (await prepareNativeEyes(disabled.model, new AbortController().signal))!
+    assert.equal(staticEyes.active, false, 'renderable geometry must not invent source blink capability')
+    disposeGLTF(disabled.model)
+})
+
+test('explicit blink capability never authorizes an invalid rendered target', async () => {
+    const f = fixture()
+    f.json.extras.atpInteractions.eyes.Closed = [99]
+    await assert.rejects(prepareNativeEyes(f.model, new AbortController().signal), /Invalid eye mesh reference/)
+    disposeGLTF(f.model)
 })
