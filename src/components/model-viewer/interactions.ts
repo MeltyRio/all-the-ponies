@@ -1,4 +1,4 @@
-import { Mesh, Raycaster, SkinnedMesh, Vector2 } from 'three'
+import { Box3, Mesh, Raycaster, SkinnedMesh, Sphere, Vector2, Vector3 } from 'three'
 import type { Camera } from 'three'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
@@ -193,13 +193,27 @@ export function hitsModel(model: GLTF, camera: Camera, canvas: HTMLCanvasElement
     const meshes: Mesh[] = []
     model.scene.traverseVisible(object => {
         if (!(object instanceof Mesh)) return
-        if (object instanceof SkinnedMesh) { object.computeBoundingSphere(); object.computeBoundingBox() }
+        if (object instanceof SkinnedMesh) updateSkinnedBounds(object)
         meshes.push(object)
     })
     const ray = new Raycaster()
     ray.setFromCamera(new Vector2((event.clientX - rect.left) / rect.width * 2 - 1,
         1 - (event.clientY - rect.top) / rect.height * 2), camera)
     return ray.intersectObjects(meshes, false).length > 0
+}
+
+// Wardrobe meshes share position buffers; only their indexed vertices belong to these bounds.
+function updateSkinnedBounds(mesh: SkinnedMesh) {
+    const box = mesh.boundingBox ??= new Box3()
+    box.makeEmpty()
+    const point = new Vector3()
+    const indices = mesh.geometry.index
+    const used = new Set<number>()
+    for (let i = 0; i < (indices?.count ?? mesh.geometry.attributes.position.count); i++) {
+        used.add(indices ? indices.getX(i) : i)
+    }
+    for (const index of used) box.expandByPoint(mesh.getVertexPosition(index, point))
+    box.getBoundingSphere(mesh.boundingSphere ??= new Sphere())
 }
 
 /** Book uses signed horizontal displacement modulo one turn. Four releases

@@ -1,8 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { BoxGeometry, Group, Mesh, MeshBasicMaterial } from 'three'
+import { Bone, BoxGeometry, BufferGeometry, Float32BufferAttribute, Group, Mesh, MeshBasicMaterial, OrthographicCamera, Skeleton, SkinnedMesh, Uint16BufferAttribute, Vector3 } from 'three'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
-import { nativeEvents, nativeEventPlayback, nativeGestures, prepareNativeEyes } from '../../src/components/model-viewer/interactions'
+import { hitsModel, nativeEvents, nativeEventPlayback, nativeGestures, prepareNativeEyes } from '../../src/components/model-viewer/interactions'
 import { disposeGLTF } from '../../src/components/model-viewer/assets'
 
 function fixture() {
@@ -199,3 +199,53 @@ test('explicit blink capability never authorizes an invalid rendered target', as
     await assert.rejects(prepareNativeEyes(f.model, new AbortController().signal), /Invalid eye mesh reference/)
     disposeGLTF(f.model)
 })
+
+
+for (const indexed of [true, false]) {
+    test(`hit testing follows the current pose using only referenced ${indexed ? 'indexed' : 'non-indexed'} vertices`, t => {
+        const geometry = new BufferGeometry()
+        const count = indexed ? 259 : 3
+        const positions = new Float32Array(count * 3).fill(100)
+        positions.set([-1, -1, 0, 1, -1, 0, 0, 1, 0])
+        geometry.setAttribute('position', new Float32BufferAttribute(positions, 3))
+        geometry.setAttribute('skinIndex', new Uint16BufferAttribute(new Uint16Array(count * 4), 4))
+        const weights = new Float32BufferAttribute(new Float32Array(count * 4), 4)
+        for (let i = 0; i < count; i++) weights.setX(i, 1)
+        geometry.setAttribute('skinWeight', weights)
+        if (indexed) geometry.setIndex([0, 1, 2])
+        const mesh = new SkinnedMesh(geometry, new MeshBasicMaterial())
+        const bone = new Bone()
+        mesh.add(bone)
+        mesh.bind(new Skeleton([bone]))
+        const scene = new Group()
+        scene.add(mesh)
+        const model = {scene} as unknown as GLTF
+        const camera = new OrthographicCamera(-3, 3, 3, -3, .1, 100)
+        camera.position.z = 10
+        const canvas = {getBoundingClientRect: () => ({left: 0, top: 0, width: 100, height: 100})} as HTMLCanvasElement
+        const visited = new Set<number>()
+        const vertexPosition = mesh.getVertexPosition.bind(mesh)
+        t.mock.method(mesh, 'getVertexPosition', (index: number, target: Vector3) => {
+            visited.add(index)
+            return vertexPosition(index, target)
+        })
+        try {
+            assert.equal(hitsModel(model, camera, canvas, {clientX: 50, clientY: 50}), true)
+            assert.deepEqual([...visited].sort((a, b) => a - b), [0, 1, 2], 'unused wardrobe vertices must not be skinned')
+            bone.position.x = 2
+            assert.equal(hitsModel(model, camera, canvas, {clientX: 50, clientY: 50}), false)
+            assert.equal(hitsModel(model, camera, canvas, {clientX: 80, clientY: 50}), true)
+            mesh.visible = false
+            visited.clear()
+            assert.equal(hitsModel(model, camera, canvas, {clientX: 80, clientY: 50}), false)
+            assert.equal(visited.size, 0, 'hidden meshes must not be skinned')
+            mesh.visible = true
+            bone.position.x = 0
+            assert.equal(hitsModel(model, camera, canvas, {clientX: 50, clientY: 50}), true)
+        } finally {
+            geometry.dispose()
+            mesh.material.dispose()
+            mesh.skeleton.dispose()
+        }
+    })
+}
