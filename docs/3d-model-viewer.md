@@ -130,7 +130,8 @@ the missing ID or combine a new catalogue with old GLBs.
 ## Wardrobe
 
 The pony viewer loads `model.wardrobe` only when its controls are opened. This
-optional schema-4 asset uses the existing hash resource path and the same rig and
+optional schema-4 asset uses `models/3d/<ObjectID>_wardrobe_<sha256>.glb`, matching
+its owning model's Object ID and the bundle's digest. It uses the same rig and
 shared animation references as the normal model. Old catalogues without it keep
 working; costume pages retain their pre-generated complete previews.
 
@@ -176,7 +177,7 @@ replacement for those checks or production delivery acceptance.
 The companion game-data change generates `models_3d.json` after Transformer,
 using Luna GameObjectData and the same extracted inputs. It writes current
 model objects under `models/3d/<ObjectID>.glb` and independent animations
-under `models/3d/<sha256>/<native-clip-name>.glb` into the existing complete `dist/`.
+under `models/3d/anim/<sha256>/<native-clip-name>.glb` into the existing complete `dist/`.
 Model and embedded texture updates replace the same Object ID key. Animation
 digest directories distinguish different native libraries with the same clip
 name, and preserve an animation when its content changes. Shared clips retain the same key
@@ -205,7 +206,7 @@ the generated asset without being recomputed in the browser.
 Embedded textures and buffers prevent hidden external GLB dependencies.
 
 Fixed model keys use `Cache-Control: no-cache` and the viewer requests cache
-revalidation. Immutable animation and anonymous model keys retain normal caching.
+revalidation. Hash-versioned wardrobe, animation and anonymous model keys retain normal caching.
 Publishing is not atomic: a failed upload can replace some model files while
 leaving the previous catalogue. An old catalogue may then fail its size or
 rig check. After publication finishes, reloading the page reads the latest
@@ -220,8 +221,8 @@ The initial production release uses `eventBinding` version 2. Coordinate the
 first release of this viewer with the matching game-data producer: make the
 viewer available before publishing its first v2 catalogue and referenced assets.
 
-The catalogue is fetched on client mount with `credentials: omit`; Three.js and
-WebGL initialize only after opening the viewer. Relative keys are resolved with
+The catalogue is fetched when opening the viewer with `credentials: omit`;
+Three.js and WebGL initialize at that point. Relative keys are resolved with
 ATP's CDN-aware helper. External URLs/path traversal in catalogue entries and
 external buffer/image URIs inside GLBs are rejected. Hosting must allow browser
 GET/CORS and deliver GLB bytes unchanged. CSP/cache/deployment policies remain
@@ -389,7 +390,8 @@ are described in game-data's `docs/3d-resource-associations.md`.
 ## Review scope and limitations
 
 This is a basic playback consumer. Native source discovery and default/outfit
-selection belong to game-data; a missing catalogue identity yields no button.
+selection belong to game-data; a missing catalogue identity closes the viewer
+while leaving its 3D button available.
 Full creator packages, recursive companions, general native event
 execution, task scenes and character-family action sorting are outside the viewer. One explicitly declared additional actor is supported as described above.
 Only the versioned parent EyeSet/SubObject/finite-emitter profile described here executes.

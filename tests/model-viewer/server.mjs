@@ -41,7 +41,7 @@ export async function startDemo(port = 5195) {
             if (key === 'manifest.json' || key === 'models_3d.json') {
                 response.setHeader('Content-Type', 'application/json')
                 response.end(key === 'manifest.json' ? manifest : catalogue)
-            } else if (/^models\/3d\/(?:[A-Za-z0-9_-]+|[a-f0-9]{64}\/[A-Za-z0-9_-]+)\.glb$/.test(key)) {
+            } else if (/^models\/3d\/(?:[A-Za-z0-9_-]+|(?:anim\/)?[a-f0-9]{64}\/[A-Za-z0-9_-]+)\.glb$/.test(key)) {
                 response.setHeader('Content-Type', 'model/gltf-binary')
                 response.end(await fs.readFile(path.join(generated, key)))
             } else {

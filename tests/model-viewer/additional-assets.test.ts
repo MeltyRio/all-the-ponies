@@ -25,7 +25,7 @@ async function resolve(schemaVersion: number, child: unknown) {
 test('schema 2 and 3 preserve independent child rigs, placement and native animation paths', async () => {
     const child = additional()
     const animation = child.model.animations[0]
-    animation.path = `models/3d/${animation.sha256}/${animation.id}.glb`
+    animation.path = `models/3d/anim/${animation.sha256}/${animation.id}.glb`
     for (const version of [2, 3]) {
         assert.deepEqual((await resolve(version, child))?.additionalActor, child)
     }

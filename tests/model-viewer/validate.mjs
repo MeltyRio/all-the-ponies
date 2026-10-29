@@ -20,13 +20,15 @@ function animationRef(value) {
     return value
 }
 const references = new Map()
-function record(ref, name, allowFixedModel = false) {
+function record(ref, name, kind = 'model') {
     const legacy = ref.path === `models/3d/${ref.sha256}.glb`
-    const named = typeof name === 'string' && name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
-        && ref.path === `models/3d/${ref.sha256}/${name}.glb`
-    const fixed = allowFixedModel && typeof name === 'string' && name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
+    const named = kind !== 'wardrobe' && typeof name === 'string' && name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
+        && ref.path === `models/3d/${kind === 'animation' ? 'anim/' : ''}${ref.sha256}/${name}.glb`
+    const fixed = kind === 'model' && typeof name === 'string' && name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
         && ref.path === `models/3d/${name}.glb`
-    if (!/^[a-f0-9]{64}$/.test(ref.sha256) || (!legacy && !named && !fixed)) throw new Error('Invalid resource key')
+    const wardrobe = kind === 'wardrobe' && typeof name === 'string' && name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
+        && ref.path === `models/3d/${name}_wardrobe_${ref.sha256}.glb`
+    if (!/^[a-f0-9]{64}$/.test(ref.sha256) || (!legacy && !named && !fixed && !wardrobe)) throw new Error('Invalid resource key')
     const previous = references.get(ref.path)
     if (previous && ['sha256', 'bytes', 'rigKey'].some(field => previous[field] !== ref[field])) {
         throw new Error(`Conflicting resource reference: ${ref.path}`)
@@ -34,17 +36,17 @@ function record(ref, name, allowFixedModel = false) {
     references.set(ref.path, ref)
 }
 for (const [identity, model] of Object.entries(catalogue.models)) {
-    record(model, identity, true)
-    if (model.wardrobe) record(model.wardrobe)
+    record(model, identity)
+    if (model.wardrobe) record(model.wardrobe, identity, 'wardrobe')
     for (const value of model.animations) {
         const animation = animationRef(value)
-        record(animation, animation.id)
+        record(animation, animation.id, 'animation')
     }
     if (model.additionalActor) {
         record(model.additionalActor.model, undefined)
         for (const value of model.additionalActor.model.animations) {
             const animation = animationRef(value)
-            record(animation, animation.id)
+            record(animation, animation.id, 'animation')
         }
     }
 }

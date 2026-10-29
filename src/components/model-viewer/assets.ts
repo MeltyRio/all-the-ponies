@@ -61,29 +61,31 @@ function check(condition: unknown, message: string): asserts condition {
     if (!condition) throw new Error(message)
 }
 
-function checkAsset(value: AssetRef, expectedName?: string, allowFixedModel = false) {
+function checkAsset(value: AssetRef, expectedName?: string, kind: 'model' | 'animation' | 'wardrobe' = 'model') {
     check(value && digestPattern.test(value.sha256) && digestPattern.test(value.rigKey), 'Invalid 3D resource identity')
     // Asset keys, never URLs: createAssetUrl also accepts absolute URLs, which
     // must not let a catalogue choose a different host or a private endpoint.
-    const prefix = `models/3d/${value.sha256}/`
+    const prefix = `models/3d/${kind === 'animation' ? 'anim/' : ''}${value.sha256}/`
     const name = typeof value.path === 'string' && value.path.startsWith(prefix) && value.path.endsWith('.glb')
         ? value.path.slice(prefix.length, -4) : ''
     const named = name.length > 0 && !/[^A-Za-z0-9_-]/.test(name)
-        && (expectedName === undefined || name === expectedName)
+        && (kind === 'wardrobe' || expectedName === undefined || name === expectedName)
     const fixedName = /^models\/3d\/([A-Za-z0-9_-]+)\.glb$/.exec(value.path)?.[1]
-    const fixed = allowFixedModel && fixedName !== undefined && value.path === `models/3d/${fixedName}.glb`
-        && (expectedName === undefined || fixedName === expectedName)
-    check(value.path === `models/3d/${value.sha256}.glb` || named || fixed, 'Invalid 3D resource path')
+    const fixed = kind === 'model' && expectedName !== undefined && fixedName !== undefined && value.path === `models/3d/${fixedName}.glb`
+        && fixedName === expectedName
+    const wardrobe = kind === 'wardrobe' && expectedName !== undefined && expectedName.length > 0
+        && fixedName === `${expectedName}_wardrobe_${value.sha256}`
+    check(value.path === `models/3d/${value.sha256}.glb` || named || fixed || wardrobe, 'Invalid 3D resource path')
     check(Number.isSafeInteger(value.bytes) && value.bytes > 0, 'Invalid 3D resource size')
 }
 
 function checkActor(model: ActorRef, playable = false, identity?: string) {
-    checkAsset(model, identity, identity !== undefined)
+    checkAsset(model, identity)
     check(Array.isArray(model.animations) && (!playable || model.animations.length > 0), 'Invalid animation list')
     const ids = new Set<string>()
     for (const animation of model.animations) {
         check(typeof animation.id === 'string' && animation.id.length > 0 && !ids.has(animation.id), 'Invalid animation identity')
-        checkAsset(animation, animation.id)
+        checkAsset(animation, animation.id, 'animation')
         check(typeof animation.name === 'string' && animation.name.length > 0, 'Invalid animation name')
         check(Number.isFinite(animation.duration) && (playable ? animation.duration > 0 : animation.duration >= 0), 'Invalid animation duration')
         check(animation.rigKey === model.rigKey, 'Animation rig is incompatible')
@@ -235,7 +237,7 @@ function catalogueModel(catalogue: Catalogue, identity: string): ModelRef | null
     expandAnimations(model)
     checkActor(model, false, identity)
     if (model.wardrobe !== undefined) {
-        checkAsset(model.wardrobe)
+        checkAsset(model.wardrobe, identity, 'wardrobe')
         check(model.wardrobe.rigKey === model.rigKey, 'Wardrobe rig is incompatible')
     }
     if (Object.prototype.hasOwnProperty.call(model, 'additionalActor')) {
@@ -266,6 +268,8 @@ export async function fetchBytes(ref: AssetRef, signal: AbortSignal): Promise<Ar
     signal.throwIfAborted()
     const immutable = ref.path === `models/3d/${ref.sha256}.glb`
         || ref.path.startsWith(`models/3d/${ref.sha256}/`)
+        || ref.path.startsWith(`models/3d/anim/${ref.sha256}/`)
+        || ref.path.endsWith(`_wardrobe_${ref.sha256}.glb`)
     const response = await fetch(createAssetUrl(ref.path), {
         signal, credentials: 'omit', redirect: 'error', cache: immutable ? 'default' : 'no-cache',
     })

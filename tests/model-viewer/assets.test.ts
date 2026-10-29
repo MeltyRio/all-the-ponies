@@ -165,7 +165,7 @@ test('shared GPU objects and image bitmaps are each released once across scenes'
 })
 
 test('fixed Object ID models revalidate while native named animations remain shared and cached', async () => {
-    const animation = { ...model.animations[0], path: `models/3d/${ref.sha256}/move.glb` }
+    const animation = { ...model.animations[0], path: `models/3d/anim/${ref.sha256}/move.glb` }
     const named = (id: string) => ({ ...ref, path: `models/3d/${id}.glb`, animations: [animation] })
     const catalogue = { schemaVersion: 1, models: { Pony_Test: named('Pony_Test'), Pet_Test: named('Pet_Test') } }
     const fetched: string[] = []
@@ -186,6 +186,68 @@ test('fixed Object ID models revalidate while native named animations remain sha
         assert.deepEqual(Buffer.from(await fetchBytes(resource, signal())), bytes)
     }
     assert.equal(fetched.filter(path => path.endsWith('.glb')).length, 3)
+})
+
+test('animation directory validates digest and native name without changing model or wardrobe paths', async () => {
+    const animation = {...model.animations[0], path: `models/3d/anim/${digest}/move.glb`}
+    const selected = {...model, wardrobe: {...ref}, animations: [animation]}
+    const catalogue = {schemaVersion: 4, models: {Pony_Test: selected}}
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? manifestFor(catalogue) : catalogue)
+    assert.deepEqual(await resolveModel('Pony_Test', signal()), selected)
+    for (const path of [`models/3d/anim/${'c'.repeat(64)}/move.glb`,
+        `models/3d/anim/${digest}/other.glb`, `models/3d/anim/${digest}/../move.glb`,
+        `models/3d/anim/${digest}/move%2F.glb`, `models/3d/${digest}/move.glb`]) {
+        animation.path = path
+        await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    }
+    animation.path = `models/3d/anim/${digest}/move.glb`
+    selected.path = animation.path
+    await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    selected.path = model.path
+    selected.wardrobe.path = animation.path
+    await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+})
+
+test('owner-specific wardrobe filenames validate identity and digest and retain immutable caching', async () => {
+    const wardrobe = {...ref, path: `models/3d/Pony_Test_wardrobe_${digest}.glb`}
+    const selected = {...model, wardrobe}
+    const catalogue = {schemaVersion: 4, models: {Pony_Test: selected}}
+    globalThis.fetch = async (input, options) => {
+        const path = new URL(String(input)).pathname.slice(1)
+        if (path === 'manifest.json') return Response.json(manifestFor(catalogue))
+        if (path === 'models_3d.json') return Response.json(catalogue)
+        assert.equal(path, wardrobe.path)
+        assert.equal(options.cache, 'default')
+        return new Response(bytes)
+    }
+    const resolved = await resolveModel('Pony_Test', signal())
+    assert.deepEqual(resolved, selected)
+    assert.deepEqual(Buffer.from(await fetchBytes(resolved!.wardrobe!, signal())), bytes)
+    for (const path of [`models/3d/Pony_Other_wardrobe_${digest}.glb`,
+        `models/3d/Pony_Test_wardrobe_${'c'.repeat(64)}.glb`,
+        `models/3d/../Pony_Test_wardrobe_${digest}.glb`,
+        `models/3d/Pony_Test%2F_wardrobe_${digest}.glb`]) {
+        wardrobe.path = path
+        await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    }
+})
+
+test('wardrobe filenames cannot substitute for ordinary models, animations or additional actors', async () => {
+    const wardrobe = {...ref, path: `models/3d/Pony_Test_wardrobe_${digest}.glb`}
+    const selected = {...model, animations: [{...model.animations[0]}]}
+    const catalogue = {schemaVersion: 4, models: {Pony_Test: selected}}
+    globalThis.fetch = async input => Response.json(String(input).includes('manifest.json')
+        ? manifestFor(catalogue) : catalogue)
+    selected.path = wardrobe.path
+    await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    selected.path = model.path
+    selected.animations[0].path = wardrobe.path
+    await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
+    selected.animations[0].path = model.animations[0].path
+    Object.assign(selected, {additionalActor: {model: {...model, path: wardrobe.path}, parentRoot: 0,
+        controller: 'native-first-then-random-v1', transform: [1,0,0,0, 0,1,0,0, 0,0,1,0, 0,0,0,1]}})
+    await assert.rejects(resolveModel('Pony_Test', signal()), /resource path/)
 })
 
 test('catalogue v3 explicitly enables only exported native click and dizzy identities', async () => {
